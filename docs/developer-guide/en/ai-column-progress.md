@@ -67,3 +67,15 @@ bazel test //unittest/sql:sql_tests --test_filter='AIColumn*.*'
 - Added a status mysqltest case requiring no model endpoint.
 - These follow-up changes have passed `git diff --check` only. Native build and
   runtime verification are pending on the user's isolated WSL worktree.
+
+## Follow-up checkpoint: strict reads
+
+- Added the session `ai_column_strict_read` variable, default OFF, with plan-cache
+  influence and session serialization. Its metadata/factory files were generated
+  from the native JSON definition; existing initializer ordering is preserved.
+- Strict SELECT resolution guards AI references in output, predicates, grouping,
+  sorting and joins. Status inspection and ordinary-column reads remain available.
+- Added native error 11120 with table/column identifiers, and preserved result
+  metadata for JSON and VECTOR. Missing outer-join rows propagate NULL.
+- Extended the status mysqltest with strict-read cases. The generator runs and
+  `git diff --check` passed; compilation and SQL execution remain pending.

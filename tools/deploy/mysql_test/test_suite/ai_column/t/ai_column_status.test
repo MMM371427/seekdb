@@ -25,5 +25,21 @@ select AI_COLUMN_STATUS(content) from ai_column_status.docs;
 select AI_COLUMN_STATUS('tags') from ai_column_status.docs;
 --error 1210
 select AI_COLUMN_STATUS(concat(content, 'x')) from ai_column_status.docs;
+set session ai_column_strict_read = ON;
+# Reading ordinary columns or inspecting state remains valid.
+select id, AI_COLUMN_STATUS(tags) from ai_column_status.docs;
+--error 11120
+select tags from ai_column_status.docs;
+--error 11120
+select count(*) from ai_column_status.docs where tags is null;
+--error 11120
+select id from ai_column_status.docs order by tags;
+--error 11120
+select count(tags) from ai_column_status.docs;
+# Missing outer-join rows have no unfinished request.
+select d.tags from (select 2 as id) seed
+left join ai_column_status.docs d on d.id = seed.id;
+set session ai_column_strict_read = OFF;
+select tags from ai_column_status.docs;
 drop database ai_column_status;
 call DBMS_AI_SERVICE.DROP_AI_MODEL('ai_column_status_model');

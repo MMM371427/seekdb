@@ -360,6 +360,8 @@ protected:
                                    ObIArray<ObRawExpr*> &real_exprs,
                                    ObRawExpr *&real_ref_expr);
   int resolve_ai_column_status(ObRawExpr *expr);
+  int rewrite_ai_column_read(ObRawExpr *&expr);
+  int rewrite_ai_column_reads();
   int resolve_basic_column_ref(const ObQualifiedName &q_name, ObRawExpr *&real_ref_expr);
   int resolve_basic_column_item(const TableItem &table_item,
                                 const common::ObString &column_name,

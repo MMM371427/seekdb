@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_expr_ai_complete.h"
+#include "sql/session/ob_sql_session_info.h"
 #include "query/ai/ob_ai_endpoint_resolver.h"
 #include "share/rc/ob_server_runtime.h"
 
@@ -242,6 +243,68 @@ int AIColumnStatus::eval_status(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res
     ret = OB_ERR_UNEXPECTED;
   } else {
     res.set_string(ObString::make_string(names[state->get_int()]));
+  }
+  return ret;
+}
+
+AIColumnRead::AIColumnRead(common::ObIAllocator &alloc)
+    : ObFuncExprOperator(alloc, T_FUN_SYS_AI_COLUMN_READ, "__ai_column_read",
+                         4, NOT_VALID_FOR_GENERATED_COL, NOT_ROW_DIMENSION, true)
+{
+  disable_operand_auto_cast();
+}
+
+int AIColumnRead::calc_result_typeN(ObExprResType &type, ObExprResType *args,
+                                   int64_t count, common::ObExprTypeCtx &type_ctx) const
+{
+  UNUSED(type_ctx);
+  int ret = OB_SUCCESS;
+  if (count != 4) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    // Preserve JSON, string collation and VECTOR subschema metadata exactly.
+    type = args[0];
+  }
+  return ret;
+}
+
+int AIColumnRead::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
+                          ObExpr &rt_expr) const
+{
+  UNUSED(expr_cg_ctx);
+  UNUSED(raw_expr);
+  rt_expr.eval_func_ = eval_read;
+  return OB_SUCCESS;
+}
+
+int AIColumnRead::eval_read(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
+{
+  int ret = OB_SUCCESS;
+  ObObj mode;
+  ObDatum *state = nullptr;
+  ObDatum *value = nullptr;
+  ObDatum *table_id = nullptr;
+  ObDatum *column_id = nullptr;
+  ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+  if (session == nullptr) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(session->get_sys_variable(share::SYS_VAR_AI_COLUMN_STRICT_READ, mode))) {
+  } else if (mode.get_int() != 0) {
+    if (OB_FAIL(expr.args_[1]->eval(ctx, state))) {
+    } else if (!state->is_null() && state->get_int() != 2) {
+      if (OB_FAIL(expr.args_[2]->eval(ctx, table_id))) {
+      } else if (OB_FAIL(expr.args_[3]->eval(ctx, column_id))) {
+      } else {
+        ret = OB_AI_COLUMN_UNFINISHED;
+        LOG_USER_ERROR(OB_AI_COLUMN_UNFINISHED, table_id->get_uint(), column_id->get_uint());
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(expr.args_[0]->eval(ctx, value))) {
+    } else {
+      res = *value;
+    }
   }
   return ret;
 }

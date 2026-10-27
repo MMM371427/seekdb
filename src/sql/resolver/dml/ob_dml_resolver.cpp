@@ -17,6 +17,8 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "config_bridge.h"
 #include "ob_dml_resolver.h"
+#include <functional>
+#include "sql/resolver/dml/ob_stmt_expr_visitor.h"
 #include "sql/resolver/dml/ob_view_table_resolver.h"
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "sql/resolver/dml/ob_default_value_utils.h"
@@ -943,6 +945,93 @@ int ObDMLResolver::get_target_column_list(ObSEArray<ColumnItem, 4> &target_list,
           }
         }
       }
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::rewrite_ai_column_reads()
+{
+  int ret = OB_SUCCESS;
+  ObObj mode;
+  if (params_.is_from_create_view_) {
+    // Store the view definition independently of the creating session's mode.
+  } else if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_AI_COLUMN_STRICT_READ, mode))) {
+  } else if (mode.get_int() != 0) {
+    class ReadVisitor : public ObStmtExprVisitor {
+    public:
+      explicit ReadVisitor(std::function<int(ObRawExpr *&)> rewrite) : rewrite_(rewrite)
+      {
+        remove_all();
+        add_scope(SCOPE_WHERE);
+        add_scope(SCOPE_GROUPBY);
+        add_scope(SCOPE_HAVING);
+        add_scope(SCOPE_SELECT);
+        add_scope(SCOPE_ORDERBY);
+        add_scope(SCOPE_JOINED_TABLE);
+        add_scope(SCOPE_SEMI_INFO);
+        add_scope(SCOPE_QUALIFY_FILTER);
+      }
+      int do_visit(ObRawExpr *&expr) override { return rewrite_(expr); }
+    private:
+      std::function<int(ObRawExpr *&)> rewrite_;
+    } visitor([this](ObRawExpr *&expr) { return rewrite_ai_column_read(expr); });
+    // OFF plans retain ordinary column expressions for native ANN matching.
+    // INFLUENCE_PLAN makes a session mode change invalidate cached plans.
+    if (OB_FAIL(get_stmt()->iterate_stmt_expr(visitor))) {
+    } else {
+      ret = get_stmt()->formalize_stmt(session_info_);
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::rewrite_ai_column_read(ObRawExpr *&expr)
+{
+  int ret = OB_SUCCESS;
+  if (expr == nullptr) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (expr->get_expr_type() == T_FUN_SYS_AI_COLUMN_READ
+      || expr->get_expr_type() == T_FUN_SYS_AI_COLUMN_STATUS) {
+    // Neither the original result inside a guard nor a status query is a read.
+  } else if (expr->is_column_ref_expr()) {
+    const ObColumnRefRawExpr &ref = *static_cast<ObColumnRefRawExpr *>(expr);
+    const TableItem *table = get_stmt()->get_table_item_by_id(ref.get_table_id());
+    const ObTableSchema *schema = nullptr;
+    const ObColumnSchemaV2 *column = nullptr;
+    if (table == nullptr || !table->is_basic_table()) {
+      // Derived queries are guarded in their own SELECT resolver.
+    } else if (OB_FAIL(schema_checker_->get_table_schema(table->ref_id_, schema))) {
+    } else if (schema == nullptr) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if ((column = schema->get_column_schema(ref.get_column_id())) != nullptr
+        && column->is_ai_column()) {
+      ObSqlString state_name;
+      ColumnItem *state = nullptr;
+      ObSysFunRawExpr *guard = nullptr;
+      ObConstRawExpr *table_id = nullptr;
+      ObConstRawExpr *column_id = nullptr;
+      if (OB_FAIL(state_name.append_fmt("__ai_state_%lu", column->get_column_id()))) {
+      } else if (OB_FAIL(resolve_basic_column_item(*table, state_name.string(), true, state))) {
+      } else if (state == nullptr || state->expr_ == nullptr) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_SYS_AI_COLUMN_READ, guard))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_const_uint_expr(*params_.expr_factory_,
+                     ObUInt64Type, table->ref_id_, table_id))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_const_uint_expr(*params_.expr_factory_,
+                     ObUInt64Type, column->get_column_id(), column_id))) {
+      } else if (OB_FAIL(guard->add_param_expr(expr))) {
+      } else if (OB_FAIL(guard->add_param_expr(state->expr_))) {
+      } else if (OB_FAIL(guard->add_param_expr(table_id))) {
+      } else if (OB_FAIL(guard->add_param_expr(column_id))) {
+      } else if (OB_FAIL(guard->formalize(session_info_))) {
+      } else {
+        expr = guard;
+      }
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
+      ret = SMART_CALL(rewrite_ai_column_read(expr->get_param_expr(i)));
     }
   }
   return ret;

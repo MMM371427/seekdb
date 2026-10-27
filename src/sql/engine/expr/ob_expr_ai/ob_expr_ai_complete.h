@@ -60,6 +60,17 @@ public:
   static int eval_status(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res);
 };
 
+class AIColumnRead : public ObFuncExprOperator
+{
+public:
+  explicit AIColumnRead(common::ObIAllocator &alloc);
+  int calc_result_typeN(ObExprResType &type, ObExprResType *args,
+                       int64_t count, common::ObExprTypeCtx &type_ctx) const override;
+  int cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
+              ObExpr &rt_expr) const override;
+  static int eval_read(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res);
+};
+
 } // namespace sql
 } // namespace oceanbase
 #endif // OCEANBASE_SQL_OB_EXPR_AI_COMPLETE_H_

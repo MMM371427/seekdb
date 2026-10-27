@@ -1052,6 +1052,9 @@ int ObSelectResolver::resolve(const ParseNode &parse_tree)
     }
   }
 
+  if (OB_SUCC(ret)) {
+    ret = rewrite_ai_column_reads();
+  }
   return ret;
 }
 
