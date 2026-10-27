@@ -1,0 +1,29 @@
+# Status binding must not evaluate the model expression. No endpoint is needed.
+connection default;
+--disable_warnings
+drop database if exists ai_column_status;
+--enable_warnings
+create database ai_column_status;
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('ai_column_status_model');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('ai_column_status_model',
+  '{"type":"completion","model_name":"unused"}');
+create table ai_column_status.docs (
+  id bigint primary key,
+  content varchar(100),
+  tags json AI COLUMN (AI_COMPLETE('ai_column_status_model', content))
+);
+insert into ai_column_status.docs(id, content) values (1, 'no HTTP');
+select AI_COLUMN_STATUS(tags) as state from ai_column_status.docs;
+select concat('state=', AI_COLUMN_STATUS(tags)) as nested_state
+from ai_column_status.docs where AI_COLUMN_STATUS(tags) = 'PENDING';
+select AI_COLUMN_STATUS(d.tags) as missing_state
+from (select 2 as id) seed left join ai_column_status.docs d on d.id = seed.id;
+--error 1210
+select AI_COLUMN_STATUS(content) from ai_column_status.docs;
+--error 1210
+select AI_COLUMN_STATUS('tags') from ai_column_status.docs;
+--error 1210
+select AI_COLUMN_STATUS(concat(content, 'x')) from ai_column_status.docs;
+drop database ai_column_status;
+call DBMS_AI_SERVICE.DROP_AI_MODEL('ai_column_status_model');

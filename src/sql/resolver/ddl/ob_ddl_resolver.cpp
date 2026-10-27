@@ -1880,12 +1880,14 @@ int ObDDLResolver::resolve_ai_column_definition(ObColumnSchemaV2 &column,
     ObSqlString normalized;
     const char *instruction = column.is_json()
         ? "Return exactly one valid JSON value. Do not use markdown."
+        : ob_is_integer_type(column.get_data_type())
+          ? "Return exactly one base-10 integer. Do not use markdown."
         : (column.is_string_type() || ob_is_text_tc(column.get_data_type()))
           ? "Return only the requested text. Do not use markdown."
           : "Return exactly one scalar value of the declared SQL type. Do not use markdown.";
     if (OB_FAIL(normalized.append(is_embed ? "AI_EMBED(" : "AI_COMPLETE("))) {
     }
-    for (int64_t i = 0; OB_SUCC(ret) && i < args->num_child_; ++i) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < (is_embed ? args->num_child_ : 2); ++i) {
       const ParseNode *argument = args->children_[i];
       if (OB_ISNULL(argument)) {
         ret = OB_INVALID_ARGUMENT;
@@ -1895,12 +1897,28 @@ int ObDDLResolver::resolve_ai_column_definition(ObColumnSchemaV2 &column,
         if (offset < 0 || length <= 0 || offset + length > expr->str_len_) {
           ret = OB_ERR_UNEXPECTED;
         } else if (i > 0 && OB_FAIL(normalized.append(", "))) {
-        } else if (i == 1 && !is_embed) {
-          ret = normalized.append_fmt("CONCAT((%.*s), '\\n%s')",
-              static_cast<int>(length), expr->str_value_ + offset, instruction);
         } else {
           ret = normalized.append(expr->str_value_ + offset, length);
         }
+      }
+    }
+    if (OB_SUCC(ret) && !is_embed) {
+      ret = normalized.append(", JSON_MERGE_PATCH(COALESCE((");
+      if (OB_SUCC(ret) && args->num_child_ == 3) {
+        const ParseNode &config = *args->children_[2];
+        const int64_t offset = config.stmt_loc_.first_column_ - expr->stmt_loc_.first_column_;
+        const int64_t length = config.stmt_loc_.last_column_ - config.stmt_loc_.first_column_ + 1;
+        if (offset < 0 || length <= 0 || offset + length > expr->str_len_) {
+          ret = OB_ERR_UNEXPECTED;
+        } else {
+          ret = normalized.append(expr->str_value_ + offset, length);
+        }
+      } else if (OB_SUCC(ret)) {
+        ret = normalized.append("JSON_OBJECT()");
+      }
+      if (OB_SUCC(ret)) {
+        ret = normalized.append_fmt("), JSON_OBJECT()), "
+            "JSON_OBJECT('__ai_column_system_prompt', '%s'))", instruction);
       }
     }
     if (OB_SUCC(ret) && is_embed && args->num_child_ == 2) {

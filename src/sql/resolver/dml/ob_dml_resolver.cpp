@@ -948,6 +948,56 @@ int ObDMLResolver::get_target_column_list(ObSEArray<ColumnItem, 4> &target_list,
   return ret;
 }
 
+int ObDMLResolver::resolve_ai_column_status(ObRawExpr *expr)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (expr->get_expr_type() == T_FUN_SYS_AI_COLUMN_STATUS) {
+    const ObRawExpr *argument = expr->get_param_count() == 1
+        ? expr->get_param_expr(0) : nullptr;
+    const TableItem *table = nullptr;
+    const ObTableSchema *schema = nullptr;
+    const ObColumnSchemaV2 *column = nullptr;
+    if (argument == nullptr || !argument->is_column_ref_expr()) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "AI_COLUMN_STATUS requires an AI column");
+    } else {
+      const ObColumnRefRawExpr &ref = *static_cast<const ObColumnRefRawExpr *>(argument);
+      table = get_stmt()->get_table_item_by_id(ref.get_table_id());
+      if (table == nullptr || !table->is_basic_table()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI_COLUMN_STATUS on a derived table");
+      } else if (OB_FAIL(schema_checker_->get_table_schema(table->ref_id_, schema))) {
+      } else if (schema == nullptr
+          || (column = schema->get_column_schema(ref.get_column_id())) == nullptr) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (column->is_hidden()
+          && column->get_column_name_str().prefix_match("__ai_state_")) {
+        // A shared expression may already have been bound by this resolver.
+      } else if (!column->is_ai_column()) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "AI_COLUMN_STATUS requires an AI column");
+      } else {
+        ObSqlString state_name;
+        ColumnItem *state = nullptr;
+        if (OB_FAIL(state_name.append_fmt("__ai_state_%lu", column->get_column_id()))) {
+        } else if (OB_FAIL(resolve_basic_column_item(*table, state_name.string(), true, state))) {
+        } else if (state == nullptr || state->expr_ == nullptr) {
+          ret = OB_ERR_UNEXPECTED;
+        } else {
+          expr->get_param_expr(0) = state->expr_;
+        }
+      }
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
+      ret = SMART_CALL(resolve_ai_column_status(expr->get_param_expr(i)));
+    }
+  }
+  return ret;
+}
+
 int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
     ObArray<ObQualifiedName> *output_columns/* = NULL*/)
 {
@@ -1066,6 +1116,9 @@ int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
     if (OB_SUCC(ret) && udf_info.count() > 0) {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("UDFInfo should not found be here!!!", K(ret));
+    }
+    if (OB_SUCC(ret)) {
+      ret = resolve_ai_column_status(expr);
     }
     //try to convert ObUDFRawExpr to ObAggRawExpr for pl agg udf
     if (OB_SUCC(ret)) {

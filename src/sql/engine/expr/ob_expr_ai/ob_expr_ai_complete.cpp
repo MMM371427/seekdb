@@ -202,5 +202,49 @@ int ObExprAIComplete::cg_expr(ObExprCGCtx &expr_cg_ctx,
   return ret;
 }
 
+AIColumnStatus::AIColumnStatus(common::ObIAllocator &alloc)
+    : ObFuncExprOperator(alloc, T_FUN_SYS_AI_COLUMN_STATUS, "ai_column_status",
+                         1, NOT_VALID_FOR_GENERATED_COL, NOT_ROW_DIMENSION)
+{
+}
+
+int AIColumnStatus::calc_result_type1(ObExprResType &type, ObExprResType &arg,
+                                     common::ObExprTypeCtx &type_ctx) const
+{
+  UNUSED(type_ctx);
+  arg.set_calc_type(ObIntType);
+  type.set_varchar();
+  type.set_length(7);
+  type.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+  type.set_collation_level(CS_LEVEL_IMPLICIT);
+  return OB_SUCCESS;
+}
+
+int AIColumnStatus::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
+                            ObExpr &rt_expr) const
+{
+  UNUSED(expr_cg_ctx);
+  UNUSED(raw_expr);
+  rt_expr.eval_func_ = eval_status;
+  return OB_SUCCESS;
+}
+
+int AIColumnStatus::eval_status(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
+{
+  int ret = OB_SUCCESS;
+  ObDatum *state = nullptr;
+  static const char *names[] = {"PENDING", "RUNNING", "READY", "RETRY", "FAILED"};
+  if (OB_FAIL(expr.args_[0]->eval(ctx, state))) {
+  } else if (state->is_null()) {
+    // Preserve the NULL row produced by an outer join.
+    res.set_null();
+  } else if (state->get_int() < 0 || state->get_int() >= 5) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    res.set_string(ObString::make_string(names[state->get_int()]));
+  }
+  return ret;
+}
+
 } // namespace sql
 } // namespace oceanbase

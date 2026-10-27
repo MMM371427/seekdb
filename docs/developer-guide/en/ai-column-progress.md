@@ -38,9 +38,11 @@ Rust 1.98.1 has now been installed locally. Full native build and generated
 ## Remaining work
 
 - Transactional DML task creation, dependency invalidation and rollback.
+  The previous uncommitted runtime work was lost when the execution workspace
+  was cleaned; it is not part of this remote checkpoint.
 - Durable queue, background worker, recovery, bounded retries and version guards.
 - Atomic publication of every affected AI column in a request group.
-- SHOW AI COLUMNS, AI_COLUMN_STATUS, scoped RETRY and strict-read semantics.
+- SHOW AI COLUMNS, scoped RETRY and strict-read semantics.
 - Typed result validation, vector index maintenance and query regressions.
 - ALTER MODIFY, rename/drop dependency handling and hidden-column cleanup.
 - Upgrade path for existing data directories after adding system-table fields.
@@ -54,3 +56,14 @@ The initial unit-test target is:
 ```sh
 bazel test //unittest/sql:sql_tests --test_filter='AIColumn*.*'
 ```
+
+## Follow-up checkpoint: status and completion instructions
+
+- Completion format instructions now use the provider's system-message channel;
+  the original user prompt is preserved. The private option is filtered out of
+  provider configuration in scalar and batch completion paths.
+- Added native `AI_COLUMN_STATUS(column)` binding to the hidden state column,
+  with rejection of non-AI arguments and NULL propagation for outer joins.
+- Added a status mysqltest case requiring no model endpoint.
+- These follow-up changes have passed `git diff --check` only. Native build and
+  runtime verification are pending on the user's isolated WSL worktree.
