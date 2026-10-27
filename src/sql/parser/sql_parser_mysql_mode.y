@@ -394,6 +394,7 @@ END_P SET_VAR DELIMITER
 %type <node> update_asgn_list update_asgn_factor
 %type <node> update_basic_stmt delete_basic_stmt
 %type <node> table_element_list table_element column_definition column_definition_ref column_definition_list column_name_list
+%type <node> opt_ai_column_options ai_column_option_list ai_column_option ai_column_expression ai_column_arguments ai_column_argument
 %type <node> opt_generated_keyname opt_generated_option_list opt_generated_column_attribute_list generated_column_attribute opt_storage_type
 %type <node> data_type special_table_type opt_if_not_exists opt_if_exists opt_charset collation opt_collation cast_data_type
 %type <node> replace_with_opt_hint insert_with_opt_hint column_list opt_on_duplicate_key_clause opt_into opt_replace opt_temporary no_param_column_ref
@@ -4849,6 +4850,17 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
   merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, $10);
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 7, $1, $2, attributes, $7, $9, $12, $4);
 }
+| column_definition_ref data_type opt_column_attribute_list AI COLUMN '(' ai_column_expression ')' opt_ai_column_options opt_position_column
+{
+  ParseNode *attributes = NULL;
+  ParseNode *ai_column = NULL;
+  merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, $3);
+  set_data_type_collation($2, attributes, false, true);
+  dup_expr_string($7, result, @7.first_column, @7.last_column);
+  malloc_non_terminal_node(ai_column, result->malloc_pool_, T_AI_COLUMN, 2, $7, $9);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 5,
+                          $1, $2, attributes, $10, ai_column);
+}
 | column_definition_ref SERIAL opt_column_attribute_list opt_position_column 
 {
   ParseNode *unsigned_bigint_type = NULL;
@@ -4875,6 +4887,56 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
   merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, attributes);
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 4, $1, unsigned_bigint_type, attributes, $4);
 }
+;
+
+/* Preserve argument source spans without replacing decoded literal values.
+ * The resolver uses these native parser spans to add result-type instructions. */
+ai_column_expression:
+relation_name '(' ai_column_arguments ')'
+{
+  ParseNode *arguments = NULL;
+  merge_nodes(arguments, result, T_EXPR_LIST, $3);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_SYS, 2, $1, arguments);
+  $$->stmt_loc_.first_column_ = @1.first_column;
+  $$->stmt_loc_.last_column_ = @4.last_column;
+}
+;
+
+ai_column_arguments:
+ai_column_argument
+{ $$ = $1; }
+| ai_column_arguments ',' ai_column_argument
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3); }
+;
+
+ai_column_argument:
+expr
+{
+  $$ = $1;
+  $$->stmt_loc_.first_column_ = @1.first_column;
+  $$->stmt_loc_.last_column_ = @1.last_column;
+}
+;
+
+/* AI column options deliberately use identifiers, so sync_mode and max_retries
+ * remain legal ordinary column names. Semantic validation belongs to the resolver. */
+opt_ai_column_options:
+/* EMPTY */
+{ $$ = NULL; }
+| WITH '(' ai_column_option_list ')'
+{ merge_nodes($$, result, T_EXPR_LIST, $3); }
+;
+
+ai_column_option_list:
+ai_column_option
+{ $$ = $1; }
+| ai_column_option_list ',' ai_column_option
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3); }
+;
+
+ai_column_option:
+column_name COMP_EQ expr
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, $1, $3); }
 ;
 
 constraint_definition:

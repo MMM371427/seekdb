@@ -932,6 +932,26 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
       } else if (OB_FAIL(resolve_primary_key_node(*primary_node, stats))) {
       }
       if (OB_SUCC(ret)) {
+        if (OB_FAIL(check_ai_column_dependencies(table_schema, *allocator_))) {
+        }
+        const int64_t user_column_count = table_schema.get_column_count();
+        for (int64_t i = 0; OB_SUCC(ret) && i < user_column_count; ++i) {
+          const ObColumnSchemaV2 *result = table_schema.get_column_schema_by_idx(i);
+          if (OB_ISNULL(result)) {
+            ret = OB_ERR_UNEXPECTED;
+          } else if (result->is_ai_column()) {
+            // Copy before add_column: growing the column array may invalidate pointers.
+            ObColumnSchemaV2 ai_column;
+            if (OB_FAIL(ai_column.assign(*result))) {
+            }
+            for (int64_t kind = 0; OB_SUCC(ret) && kind < 3; ++kind) {
+              ObColumnSchemaV2 hidden;
+              if (OB_FAIL(build_ai_hidden_column(ai_column, kind, gen_column_id(), hidden))) {
+              } else if (OB_FAIL(table_schema.add_column(hidden))) {
+              }
+            }
+          }
+        }
         table_schema.set_max_used_column_id(cur_column_id_);
         if (0 != autoinc_column_id) {
           table_schema.set_autoinc_column_id(autoinc_column_id);
