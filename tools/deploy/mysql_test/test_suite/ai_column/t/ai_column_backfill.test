@@ -28,6 +28,8 @@ while ($retry)
   if ($ready == 0) { --real_sleep 0.1
     dec $retry; }
 }
+select id,content,tags,score,AI_COLUMN_STATUS(tags) as tags_state,
+       AI_COLUMN_STATUS(score) as score_state from ai_column_backfill.docs order by id;
 eval select $ready=1 as existing_rows_backfilled;
 select count(*)=0 as backfill_tasks_drained
 from oceanbase.__all_ai_column_task q join oceanbase.__all_table t on t.table_id=q.table_id
@@ -44,6 +46,8 @@ while ($retry)
   if ($ready == 0) { --real_sleep 0.1
     dec $retry; }
 }
+select id,content,tags,score,AI_COLUMN_STATUS(tags) as tags_state,
+       AI_COLUMN_STATUS(score) as score_state from ai_column_backfill.docs order by id;
 eval select $ready=1 as post_alter_insert_ready;
 select count(*)=3 as backfill_preserves_source_rows from ai_column_backfill.docs;
 drop database ai_column_backfill;

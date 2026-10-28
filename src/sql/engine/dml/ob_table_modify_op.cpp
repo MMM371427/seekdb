@@ -164,7 +164,7 @@ int AIColumnRuntime::after_row(ObTableModifyOp &op, const ObDMLBaseCtDef &def,
       else if (OB_FAIL(ai_hex(sql, group))) {}
       else if (OB_FAIL(sql.append(","))) {}
       else if (OB_FAIL(ai_hex(sql, token.get_string()))) {}
-      else if (OB_FAIL(sql.append_fmt(",%ld,", column->get_schema_version()))) {}
+      else if (OB_FAIL(sql.append_fmt(",(SELECT schema_version FROM oceanbase.__all_column WHERE table_id=%lu AND column_id=%lu),", table->get_table_id(), column->get_column_id()))) {}
       else if (OB_FAIL(ai_hex(sql, new_key.string()))) {}
       else if (OB_FAIL(sql.append_fmt(",0,0,%ld,NOW(6)) ON DUPLICATE KEY UPDATE request_id=VALUES(request_id),request_token=VALUES(request_token),definition_version=VALUES(definition_version),rowkey_predicate=VALUES(rowkey_predicate),state=0,retry_count=0,max_retries=VALUES(max_retries),eligible_ts=NOW(6),result=NULL,error_code=0", column->get_ai_max_retries()))) {}
       else { ret = op.execute_write(sql.ptr()); }

@@ -6286,6 +6286,15 @@ int ObDDLService::resolve_orig_default_value(ObColumnSchemaV2 &alter_column_sche
     const ObTimeZoneInfoWrap &tz_info_wrap, ObIAllocator &allocator)
 {
   int ret = OB_SUCCESS;
+  // A missing request is the durable discovery marker for pre-ALTER rows.
+  // Preserve it while retaining UUID() as the default for future INSERTs.
+  if (alter_column_schema.is_hidden()
+      && alter_column_schema.is_default_expr_v2_column()
+      && alter_column_schema.get_column_name_str().prefix_match("__ai_request_")) {
+    ObObj missing_request;
+    missing_request.set_null();
+    return alter_column_schema.set_orig_default_value(missing_request);
+  }
   const ObObj &cur_default_value = alter_column_schema.get_cur_default_value();
   if (!cur_default_value.is_null()) {
     if (OB_FAIL(alter_column_schema.set_orig_default_value(cur_default_value))) {
