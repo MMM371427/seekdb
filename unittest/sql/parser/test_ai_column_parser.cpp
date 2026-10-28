@@ -69,6 +69,31 @@ TEST(AIColumnParser, alter_add_modify_and_ordinary_ai_identifier)
   }
 }
 
+TEST(AIColumnParser, retry_lowers_to_native_update)
+{
+  const char *statements[] = {
+    "ALTER TABLE docs RETRY AI COLUMN tags",
+    "ALTER TABLE docs RETRY AI COLUMN tags WHERE id IN (1, 3)",
+    "ALTER TABLE docs RETRY AI COLUMN tags WHERE status='FAILED'",
+    "ALTER TABLE docs RETRY AI COLUMN tags WHERE `status`='active'"
+  };
+  for (const char *sql : statements) {
+    common::ObArenaAllocator allocator;
+    ObParser parser(allocator, DEFAULT_MYSQL_MODE);
+    ParseResult result = {};
+    ASSERT_EQ(0, parser.parse(common::ObString(sql), result)) << sql;
+    ASSERT_NE(nullptr, result.result_tree_);
+    ASSERT_EQ(T_STMT_LIST, result.result_tree_->type_);
+    ASSERT_EQ(1, result.result_tree_->num_child_);
+    const ParseNode *update = result.result_tree_->children_[0];
+    ASSERT_NE(nullptr, update);
+    EXPECT_EQ(T_UPDATE, update->type_);
+    EXPECT_EQ(0x41494352, update->value_);
+    EXPECT_EQ(11, update->num_child_);
+    parser.free_result(result);
+  }
+}
+
 TEST(AIColumnParser, rejects_unbalanced_options)
 {
   common::ObArenaAllocator allocator;

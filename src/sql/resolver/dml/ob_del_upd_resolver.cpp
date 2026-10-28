@@ -61,7 +61,8 @@ ObDelUpdResolver::ObDelUpdResolver(ObResolverParams &params)
   : ObDMLResolver(params),
     insert_column_ids_(),
     is_column_specify_(false),
-    is_resolve_insert_update_(false)
+    is_resolve_insert_update_(false),
+    is_ai_column_retry_(false)
 {
   // TODO Auto-generated constructor stub
 }
@@ -71,9 +72,64 @@ ObDelUpdResolver::~ObDelUpdResolver()
   // TODO Auto-generated destructor stub
 }
 
+int ObDelUpdResolver::resolve_ai_retry_assignments(ObIArray<ObTableAssignment> &tables)
+{
+  int ret = OB_SUCCESS;
+  if (tables.count() != 1 || tables.at(0).assignments_.count() != 1) {
+    ret = OB_NOT_SUPPORTED;
+  } else {
+    ObTableAssignment &assigns = tables.at(0);
+    ObColumnRefRawExpr *target = assigns.assignments_.at(0).column_expr_;
+    const TableItem *table = get_stmt()->get_table_item_by_id(assigns.table_id_);
+    const ObTableSchema *schema = nullptr;
+    const ObColumnSchemaV2 *column = nullptr;
+    if (table == nullptr || target == nullptr || !table->is_basic_table()) {
+      ret = OB_NOT_SUPPORTED;
+    } else if (OB_FAIL(schema_checker_->get_table_schema(table->ref_id_, schema))) {
+    } else if (schema == nullptr || (column = schema->get_column_schema(target->get_column_id())) == nullptr) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (!column->is_ai_column()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "retrying a column that is not an AI column");
+    } else {
+      ObRawExpr *pending = nullptr;
+      if (OB_FAIL(ObRawExprUtils::build_null_expr(*params_.expr_factory_, pending))) {
+      } else {
+        assigns.assignments_.at(0).expr_ = pending;
+        assigns.assignments_.at(0).is_implicit_ = true;
+      }
+      for (int64_t kind = 0; OB_SUCC(ret) && kind < 2; ++kind) {
+        ObSqlString name;
+        ColumnItem *item = nullptr;
+        ObAssignment assignment;
+        if (OB_FAIL(name.append_fmt(kind == 0 ? "__ai_state_%lu" : "__ai_request_%lu", column->get_column_id()))) {
+        } else if (OB_FAIL(resolve_basic_column_item(*table, name.string(), true, item))) {
+        } else if (item == nullptr || item->expr_ == nullptr) { ret = OB_ERR_UNEXPECTED;
+        } else if (kind == 0) {
+          ObConstRawExpr *zero = nullptr;
+          ret = ObRawExprUtils::build_const_int_expr(*params_.expr_factory_, ObIntType, 0, zero);
+          assignment.expr_ = zero;
+        } else {
+          ObSysFunRawExpr *uuid = nullptr;
+          if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_SYS_UUID, uuid))) {
+          } else { uuid->set_func_name("uuid"); assignment.expr_ = uuid; }
+        }
+        if (OB_SUCC(ret)) {
+          assignment.column_expr_ = item->expr_;
+          assignment.is_implicit_ = true;
+          if (OB_FAIL(assignment.expr_->formalize(session_info_))) {
+          } else { ret = assigns.assignments_.push_back(assignment); }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObDelUpdResolver::resolve_ai_assignments(ObIArray<ObTableAssignment> &tables)
 {
   int ret = OB_SUCCESS;
+  if (is_ai_column_retry_) { return resolve_ai_retry_assignments(tables); }
   if (AIColumnRuntime::is_internal_write()) { return ret; }
   for (int64_t t = 0; OB_SUCC(ret) && t < tables.count(); ++t) {
     ObTableAssignment &assigns = tables.at(t);

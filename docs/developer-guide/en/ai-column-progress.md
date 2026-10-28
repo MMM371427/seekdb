@@ -142,3 +142,24 @@ checks two preexisting rows, two added AI columns, drained tasks and a later
 INSERT. Bash/Python/diff checks pass; new C++ build and runtime test pending.
 Manual RETRY, column-wide strict-read semantics, SHOW AI COLUMNS and other
 previously documented limitations remain incomplete.
+
+
+## Confirmed ALTER backfill and manual retry checkpoint
+
+The user rebuilt commit `8397d9de` and reported all four backfill assertions
+passing in `/home/magic/seekdb-ai-column-run-cQkQF2`: historical results, task
+drain, later INSERT and source-row preservation. Worker, T1, vector and backfill
+now have 51 passing named boolean assertions across their reported runs.
+
+Manual RETRY is lowered by the native grammar to a transactional UPDATE. It
+invalidates only the named AI column and renews its request token, retaining
+transactional queue insertion and stale-result protection. Retry predicates
+map unquoted STATUS to the selected column's state; quoted business columns
+keep their normal meaning. Eight new SQL assertions cover selection, rollback,
+failed-state selection, quoted STATUS and successful regeneration. These new
+C++ paths and SQL assertions still require a native build/runtime run.
+Bison 2.4.1 regenerated the grammar with `-Werror` without conflicts; Bash
+syntax, Python compilation and whitespace checks passed.
+Column-wide strict reads, SHOW AI COLUMNS, lifecycle edge cases and per-column
+conversion failures remain outstanding. No merge or competition submission
+has been performed.

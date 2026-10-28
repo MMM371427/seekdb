@@ -4,6 +4,10 @@ import argparse
 from pathlib import Path
 
 CHECKS = {
+    'ai_column_manual_retry': ['retry_initial_rows_ready', 'retry_selected_row_invalidated',
+        'retry_unselected_row_preserved', 'retry_rollback_restores_results',
+        'retry_offline_row_failed', 'retry_status_pseudo_column',
+        'retry_quoted_business_status', 'retry_all_rows_ready'],
     'ai_column_backfill': ['existing_rows_backfilled', 'backfill_tasks_drained',
                            'post_alter_insert_ready', 'backfill_preserves_source_rows'],
     'ai_column_vector_index': 'initial_embeddings_ready vector_hidden_during_regeneration\n        vector_update_task_created old_vector_removed_from_ann regenerated_vector_ready\n        vector_task_removed regenerated_vector_visible_to_ann\n        vector_transaction_sees_invalidation vector_transaction_sees_task\n        vector_rollback_restores_row vector_rollback_removes_task\n        rollback_vector_still_visible_to_ann'.split(),

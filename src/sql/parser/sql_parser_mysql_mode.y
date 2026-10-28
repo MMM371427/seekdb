@@ -333,7 +333,7 @@ END_P SET_VAR DELIMITER
         QUANTIFIER_TABLE QUARTER QUERY QUEUE_TIME QUICK
 
         RECOVER REDUNDANT REFRESH RELAY RELAYLOG RELAY_LOG_FILE RELAY_LOG_POS RELAY_THREAD RELOAD REMOVE
-        REPEATABLE RESET RESPECT RESTART RESTORE RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE
+        REPEATABLE RESET RESPECT RESTART RESTORE RETRY RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE
         REWRITE ROLLBACK ROLLUP ROUTINE ROW ROWID ROW_COUNT ROW_FORMAT ROWS RTREE
         RUN RECYCLEBIN REPLICATION ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS
         RANK READ_ONLY RECOVERY REJECT ROLE
@@ -14722,6 +14722,24 @@ alter_with_opt_hint TABLE relation_factor alter_table_actions
   malloc_non_terminal_node($$, result->malloc_pool_, T_ALTER_TABLE, 4, $3, table_actions, NULL, $1);
   $$->value_ = 0;
 }
+| alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_name opt_where
+{
+  ParseNode *table = NULL;
+  ParseNode *tables = NULL;
+  ParseNode *column = NULL;
+  ParseNode *assignment = NULL;
+  ParseNode *assignments = NULL;
+  malloc_non_terminal_node(table, result->malloc_pool_, T_ORG, 4, $3, NULL, NULL, NULL);
+  malloc_non_terminal_node(tables, result->malloc_pool_, T_TABLE_REFERENCES, 1, table);
+  malloc_non_terminal_node(column, result->malloc_pool_, T_COLUMN_REF, 3, NULL, NULL, $7);
+  malloc_non_terminal_node(assignment, result->malloc_pool_, T_ASSIGN_ITEM, 2, column, column);
+  malloc_non_terminal_node(assignments, result->malloc_pool_, T_ASSIGN_LIST, 1, assignment);
+  /* Lower to native transactional UPDATE; the resolver replaces the assignment. */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_UPDATE, 11,
+      NULL, tables, assignments, $8, NULL, NULL, NULL, $1, NULL, NULL, NULL);
+  $$->value_ = 0x41494352;
+}
+
 ;
 
 
@@ -18020,6 +18038,7 @@ ACCOUNT
 |       RESPECT
 |       RESTART
 |       RESTORE
+|       RETRY
 |       RESUME
 |       RETURNED_SQLSTATE
 |       RETURNING
