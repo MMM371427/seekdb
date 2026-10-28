@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "config_bridge.h"
 #include "ob_dml_resolver.h"
+#include "sql/engine/dml/ob_table_modify_op.h"
 #include <functional>
 #include "sql/resolver/dml/ob_stmt_expr_visitor.h"
 #include "sql/resolver/dml/ob_view_table_resolver.h"
@@ -1976,6 +1977,7 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
                                              ObDMLStmt *stmt /* = NULL */)
 {
   int ret = OB_SUCCESS;
+  include_hidden = include_hidden || AIColumnRuntime::is_worker_write();
   ObColumnRefRawExpr *col_expr = NULL;
   ObSchemaGetterGuard *schema_guard = NULL;
   ColumnItem column_item;

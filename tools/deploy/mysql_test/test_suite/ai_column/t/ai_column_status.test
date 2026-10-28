@@ -13,6 +13,8 @@ create table ai_column_status.docs (
   content varchar(100),
   tags json AI COLUMN (AI_COMPLETE('ai_column_status_model', content))
 );
+# Keep these requests uncommitted so the worker cannot race status assertions.
+start transaction;
 insert into ai_column_status.docs(id, content) values (1, 'no HTTP');
 select AI_COLUMN_STATUS(tags) as state from ai_column_status.docs;
 select concat('state=', AI_COLUMN_STATUS(tags)) as nested_state
@@ -41,5 +43,6 @@ select d.tags from (select 2 as id) seed
 left join ai_column_status.docs d on d.id = seed.id;
 set session ai_column_strict_read = OFF;
 select tags from ai_column_status.docs;
+rollback;
 drop database ai_column_status;
 call DBMS_AI_SERVICE.DROP_AI_MODEL('ai_column_status_model');

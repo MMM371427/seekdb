@@ -63,7 +63,9 @@ if [ "$READY" != 1 ]; then
 fi
 
 echo 'AI-COL-039 server ready'
-for test_case in ai_column_ddl ai_column_status; do
+cd "$TASK_ROOT/tools/deploy"
+read -r -a TEST_CASES <<< "${AI_COLUMN_TEST_CASES:-ai_column_ddl ai_column_status ai_column_t1_dml ai_column_worker}"
+for test_case in "${TEST_CASES[@]}"; do
   echo "AI-COL-040 running $test_case"
   if "$MYSQLTEST" --no-defaults --protocol=TCP --host=127.0.0.1 \
       --port="$PORT" --user=root --database=oceanbase --logdir="$RUN_DIR" \
@@ -73,7 +75,10 @@ for test_case in ai_column_ddl ai_column_status; do
   else
     echo "FAIL: $test_case"
     tail -n 100 "$RUN_DIR/$test_case.log"
+    echo "--- Server error context"
+    grep -n -B 5 -A 8 -E -- 'ret=-40[0-9]+|errcode=-40[0-9]+|AI column worker iteration failed' \
+      "$RUN_DIR/log/seekdb.log" | tail -n 100 || true
     exit 1
   fi
 done
-echo "AI-COL-041 both SQL cases completed; logs: $RUN_DIR"
+echo "AI-COL-041 selected SQL cases completed; logs: $RUN_DIR"

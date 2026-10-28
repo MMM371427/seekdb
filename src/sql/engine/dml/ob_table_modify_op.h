@@ -38,6 +38,7 @@ enum ObDmlSnapshotOptState
 class AIColumnRuntime
 {
 public:
+  static int process_pending(common::ObMySQLProxy &proxy);
   static bool is_worker_write() { return worker_write_; }
   class WriteGuard {
   public:

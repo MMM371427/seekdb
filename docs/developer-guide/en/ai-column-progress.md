@@ -104,3 +104,17 @@ bazel test //unittest/sql:sql_tests --test_filter='AIColumn*.*'
   cached result and error code. Native schema generation and diff checks pass.
 - Enqueue, transaction rollback integration and background execution are still
   pending; the new queue definition alone does not schedule model requests.
+
+## Background worker checkpoint (not yet runtime verified)
+
+- The user reported the DDL/status cases passing again after `965370b7`,
+  including INSERT through the native transactional queue hook.
+- Added a dedicated observer timer, durable group selection, native AI calls
+  outside publication transactions, cached results, retry deadlines, request
+  token/definition guards, and atomic grouped publication through native UPDATE.
+- The launcher now includes the existing T1 and worker cases, runs from the
+  required mock-script working directory, and prints server error context.
+- Bash syntax and diff checks pass; native compilation and all worker runtime
+  cases remain pending. RETRY syntax, SHOW AI COLUMNS, ALTER backfill and recovery
+  discovery remain incomplete. A conversion failure currently fails the entire
+  publication group; per-column conversion validation still needs implementation.

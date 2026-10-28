@@ -17,6 +17,10 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_table_modify_op.h"
+#include <vector>
+#include <string>
+#include <algorithm>
+#include "common/mysqlclient/ob_mysql_transaction.h"
 #include "share/schema/ob_schema_getter_guard.h"
 #include "share/ob_autoincrement_service.h"
 #include "query/session/ob_inner_sql_connection_access.h"
@@ -166,6 +170,215 @@ int AIColumnRuntime::after_row(ObTableModifyOp &op, const ObDMLBaseCtDef &def,
     }
     const int end_ret = op.end_nested_session();
     if (OB_SUCC(ret)) { ret = end_ret; }
+  }
+  return ret;
+}
+
+namespace {
+struct AIWork {
+  std::string group, token, predicate, database, table, column, expression, output, hash;
+  int64_t tid=0, cid=0, version=0, state=0, retries=0, limit=0, eligible=0;
+  bool null_output=false;
+};
+ObString ai_string(const std::string &s) { return ObString(static_cast<int32_t>(s.size()), s.data()); }
+int ai_read_text(ObMySQLResult &r, const char *name, std::string &out)
+{
+  ObString value;
+  int ret=r.get_varchar(name,value);
+  if (OB_SUCC(ret)) { if (value.empty()) out.clear(); else out.assign(value.ptr(),value.length()); }
+  return ret;
+}
+int ai_task_key(ObSqlString &sql, const AIWork &w)
+{
+  int ret=sql.append_fmt("table_id=%ld AND column_id=%ld AND rowkey_hash=",w.tid,w.cid);
+  if (OB_SUCC(ret)) ret=ai_hex(sql,ai_string(w.hash));
+  if (OB_SUCC(ret)) ret=sql.append(" AND request_token=");
+  if (OB_SUCC(ret)) ret=ai_hex(sql,ai_string(w.token));
+  return ret;
+}
+int ai_table_name(ObSqlString &sql,const AIWork &w)
+{
+  int ret=ai_identifier(sql,ai_string(w.database));
+  if (OB_SUCC(ret)) ret=sql.append(".");
+  if (OB_SUCC(ret)) ret=ai_identifier(sql,ai_string(w.table));
+  return ret;
+}
+int ai_row_guard(ObSqlString &sql,const AIWork &w)
+{
+  int ret=sql.append_fmt("(%s) AND `__ai_request_%ld`=",w.predicate.c_str(),w.cid);
+  if (OB_SUCC(ret)) ret=ai_hex(sql,ai_string(w.token));
+  if (OB_SUCC(ret)) ret=sql.append_fmt(" AND EXISTS(SELECT 1 FROM oceanbase.__all_ai_column WHERE table_id=%ld AND column_id=%ld AND definition_version=%ld)",w.tid,w.cid,w.version);
+  return ret;
+}
+int ai_set_task(ObMySQLProxy &proxy,const AIWork &w,int64_t state,int error)
+{
+  int ret=OB_SUCCESS; int64_t affected=0;
+  ObSqlString sql;
+  if (OB_FAIL(sql.append_fmt("UPDATE oceanbase.__all_ai_column_task SET state=%ld,retry_count=%ld,error_code=%d,eligible_ts=TIMESTAMPADD(SECOND,%ld,NOW(6)),result=",state,w.retries,error,state==1?5:state==3?(1LL<<std::min<int64_t>(w.retries-1,6)):0))) {}
+  else if (state==2 && !w.null_output) ret=ai_hex(sql,ai_string(w.output));
+  else ret=sql.append("NULL");
+  if (OB_SUCC(ret)) ret=sql.append(" WHERE ");
+  if (OB_SUCC(ret)) ret=ai_task_key(sql,w);
+  if (OB_SUCC(ret)) ret=proxy.write(sql.ptr(),affected);
+  return ret;
+}
+int ai_set_row_state(ObMySQLProxy &proxy,const AIWork &w,int64_t state)
+{
+  ObSqlString sql; int64_t affected=0;
+  int ret=sql.append("UPDATE ");
+  if (OB_SUCC(ret)) ret=ai_table_name(sql,w);
+  if (OB_SUCC(ret)) ret=sql.append_fmt(" SET `__ai_state_%ld`=%ld WHERE ",w.cid,state);
+  if (OB_SUCC(ret)) ret=ai_row_guard(sql,w);
+  if (OB_SUCC(ret)) ret=proxy.write(sql.ptr(),affected);
+  return ret;
+}
+int ai_publish(ObMySQLProxy &proxy,const std::vector<AIWork> &work,bool failed)
+{
+  int ret=OB_SUCCESS; int64_t affected=0;
+  ObSqlString sql,cleanup;
+  const AIWork &first=work.front();
+  if (OB_FAIL(sql.append("UPDATE "))) {}
+  else if (OB_FAIL(ai_table_name(sql,first))) {}
+  else ret=sql.append(" SET ");
+  for (size_t i=0;OB_SUCC(ret)&&i<work.size();++i) {
+    const AIWork &w=work[i];
+    if (i>0) ret=sql.append(",");
+    if (OB_SUCC(ret)) ret=ai_identifier(sql,ai_string(w.column));
+    if (OB_SUCC(ret)) ret=sql.append("=");
+    if (OB_SUCC(ret) && !failed && w.state==2 && !w.null_output) {
+      ret=sql.append("CONVERT(");
+      if (OB_SUCC(ret)) ret=ai_hex(sql,ai_string(w.output));
+      if (OB_SUCC(ret)) ret=sql.append(" USING utf8mb4)");
+    } else if (OB_SUCC(ret)) ret=sql.append("NULL");
+    if (OB_SUCC(ret)) ret=sql.append_fmt(",`__ai_state_%ld`=%d",w.cid,failed||w.state==4?4:2);
+  }
+  if (OB_SUCC(ret)) ret=sql.append(" WHERE ");
+  for (size_t i=0;OB_SUCC(ret)&&i<work.size();++i) {
+    if (i>0) ret=sql.append(" AND ");
+    if (OB_SUCC(ret)) ret=ai_row_guard(sql,work[i]);
+  }
+  if (OB_SUCC(ret)) ret=cleanup.append("DELETE FROM oceanbase.__all_ai_column_task WHERE request_id=");
+  if (OB_SUCC(ret)) ret=ai_hex(cleanup,ai_string(first.group));
+  ObMySQLTransaction tx;
+  if (OB_SUCC(ret)) ret=tx.start(&proxy);
+  if (OB_SUCC(ret)) {
+    std::string mode;
+    {
+      ObMySQLProxy::MySQLResult result;
+      if (OB_FAIL(tx.read(result,"SELECT @@sql_mode AS mode"))) {}
+      else if (OB_FAIL(result.get_result()->next())) {}
+      else ret=ai_read_text(*result.get_result(),"mode",mode);
+    }
+    if (OB_SUCC(ret)) ret=tx.write("SET SESSION sql_mode='STRICT_ALL_TABLES'",affected);
+    if (OB_SUCC(ret)) ret=tx.write(sql.ptr(),affected);
+    if (OB_SUCC(ret)&&affected!=0) ret=tx.write(cleanup.ptr(),affected);
+    ObSqlString restore;
+    int restore_ret=restore.append("SET SESSION sql_mode=");
+    if (OB_SUCCESS==restore_ret) restore_ret=ai_hex(restore,ai_string(mode));
+    if (OB_SUCCESS==restore_ret) restore_ret=tx.write(restore.ptr(),affected);
+    if (OB_SUCC(ret)) ret=restore_ret;
+    int end_ret=tx.end(OB_SUCC(ret));
+    if (OB_SUCC(ret)) ret=end_ret;
+  }
+  return ret;
+}
+} // namespace
+
+int AIColumnRuntime::process_pending(ObMySQLProxy &proxy)
+{
+  int ret=OB_SUCCESS;
+  WriteGuard guard;
+  std::string group;
+  {
+    ObMySQLProxy::MySQLResult result;
+    const char *pick="SELECT request_id FROM oceanbase.__all_ai_column_task GROUP BY request_id HAVING SUM(state IN(0,1,3))=0 OR MIN(CASE WHEN state IN(0,1,3) THEN eligible_ts END)<=NOW(6) ORDER BY MIN(eligible_ts) LIMIT 1";
+    if (OB_FAIL(proxy.read(result,pick))) { return ret; }
+    if (OB_FAIL(result.get_result()->next())) return ret==OB_ITER_END?OB_SUCCESS:ret;
+    if (OB_FAIL(ai_read_text(*result.get_result(),"request_id",group))) return ret;
+  }
+  std::vector<AIWork> work;
+  ObSqlString load;
+  if (OB_FAIL(load.append("SELECT q.*,a.column_name,a.normalized_expr,t.table_name,d.database_name,q.eligible_ts<=NOW(6) AS eligible FROM oceanbase.__all_ai_column_task q JOIN oceanbase.__all_ai_column a ON a.table_id=q.table_id AND a.column_id=q.column_id AND a.definition_version=q.definition_version JOIN oceanbase.__all_table t ON t.table_id=q.table_id JOIN oceanbase.__all_database d ON d.database_id=t.database_id WHERE q.request_id="))) {}
+  else ret=ai_hex(load,ai_string(group));
+  if (OB_FAIL(ret)) return ret;
+  {
+    ObMySQLProxy::MySQLResult result;
+    if (OB_FAIL(proxy.read(result,load.ptr()))) return ret;
+    ObMySQLResult &r=*result.get_result();
+    while (OB_SUCCESS==(ret=r.next())) {
+      AIWork w; w.group=group;
+      if (OB_FAIL(r.get_int("table_id",w.tid))) {}
+      else if (OB_FAIL(r.get_int("column_id",w.cid))) {}
+      else if (OB_FAIL(r.get_int("definition_version",w.version))) {}
+      else if (OB_FAIL(r.get_int("state",w.state))) {}
+      else if (OB_FAIL(r.get_int("retry_count",w.retries))) {}
+      else if (OB_FAIL(r.get_int("max_retries",w.limit))) {}
+      else if (OB_FAIL(r.get_int("eligible",w.eligible))) {}
+      else if (OB_FAIL(ai_read_text(r,"rowkey_hash",w.hash))) {}
+      else if (OB_FAIL(ai_read_text(r,"request_token",w.token))) {}
+      else if (OB_FAIL(ai_read_text(r,"rowkey_predicate",w.predicate))) {}
+      else if (OB_FAIL(ai_read_text(r,"column_name",w.column))) {}
+      else if (OB_FAIL(ai_read_text(r,"normalized_expr",w.expression))) {}
+      else if (OB_FAIL(ai_read_text(r,"table_name",w.table))) {}
+      else if (OB_FAIL(ai_read_text(r,"database_name",w.database))) {}
+      else if (w.state==2) {
+        ret=ai_read_text(r,"result",w.output);
+        if (ret==OB_ERR_NULL_VALUE) { w.null_output=true; ret=OB_SUCCESS; }
+      }
+      if (OB_FAIL(ret)) return ret;
+      work.push_back(w);
+    }
+    if (ret==OB_ITER_END) ret=OB_SUCCESS;
+  }
+  if (work.empty()) {
+    ObSqlString sql; int64_t affected=0;
+    if (OB_FAIL(sql.append("DELETE FROM oceanbase.__all_ai_column_task WHERE request_id="))) {}
+    else if (OB_FAIL(ai_hex(sql,ai_string(group)))) {}
+    else ret=proxy.write(sql.ptr(),affected);
+    return ret;
+  }
+  bool complete=true;
+  for (AIWork &w:work) {
+    if (w.state!=2&&w.state!=4&&!w.eligible) { complete=false; continue; }
+    const bool cached=w.state==2||w.state==4;
+    if (!cached) {
+      if (OB_FAIL(ai_set_task(proxy,w,1,0))) return ret;
+      if (OB_FAIL(ai_set_row_state(proxy,w,1))) return ret;
+    }
+    ObSqlString query;
+    if (OB_FAIL(query.append(cached?"SELECT 1 AS ai_output FROM ":"SELECT CAST(("))) return ret;
+    if (!cached) {
+      if (OB_FAIL(query.append(w.expression.c_str()))) return ret;
+      if (OB_FAIL(query.append(") AS CHAR) AS ai_output FROM "))) return ret;
+    }
+    if (OB_FAIL(ai_table_name(query,w))) return ret;
+    if (OB_FAIL(query.append(" WHERE "))) return ret;
+    if (OB_FAIL(ai_row_guard(query,w))) return ret;
+    int call_ret=OB_SUCCESS;
+    {
+      ObMySQLProxy::MySQLResult result;
+      call_ret=proxy.read(result,query.ptr());
+      if (OB_SUCCESS==call_ret) call_ret=result.get_result()->next();
+      if (OB_SUCCESS==call_ret&&!cached) call_ret=ai_read_text(*result.get_result(),"ai_output",w.output);
+      if (call_ret==OB_ERR_NULL_VALUE&&!cached) { w.null_output=true; call_ret=OB_SUCCESS; }
+    }
+    if (call_ret==OB_ITER_END) {
+      ObSqlString sql; int64_t affected=0;
+      if (OB_FAIL(sql.append("DELETE FROM oceanbase.__all_ai_column_task WHERE "))) return ret;
+      if (OB_FAIL(ai_task_key(sql,w))) return ret;
+      if (OB_FAIL(proxy.write(sql.ptr(),affected))) return ret;
+      return OB_SUCCESS;
+    }
+    if (cached) { if (call_ret!=OB_SUCCESS) return call_ret; continue; }
+    if (call_ret==OB_SUCCESS) w.state=2;
+    else if (w.retries<w.limit) { ++w.retries; w.state=3; complete=false; }
+    else w.state=4;
+    if (OB_FAIL(ai_set_task(proxy,w,w.state,call_ret))) return ret;
+    if (w.state==3&&OB_FAIL(ai_set_row_state(proxy,w,3))) return ret;
+  }
+  if (complete) {
+    ret=ai_publish(proxy,work,false);
+    if ((ret<=-5000&&ret>=-5999)||ret==OB_ERR_INVALID_VECTOR_DIM) ret=ai_publish(proxy,work,true);
   }
   return ret;
 }
