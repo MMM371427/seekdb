@@ -404,12 +404,10 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
                   LOG_USER_ERROR(OB_ERR_NO_PRIVILEGE, "SHOW AI COLUMNS");
                 } else if (OB_FAIL(sql_gen.init(params_.allocator_))) {
                 } else if (OB_FAIL(sql_gen.gen_select_str(
-                    "SELECT column_name AS `Field`, normalized_expr AS `Expression`, "
-                    "sync_mode AS `Sync_mode`, max_retries AS `Max_retries`, "
-                    "definition_version AS `Definition_version`"))) {
+                    "SELECT `Field`, `Expression`, `Sync_mode`, `Max_retries`, `Definition_version`"))) {
                 } else if (OB_FAIL(sql_gen.gen_from_str(
-                    "SELECT column_name, ai_column_expr AS normalized_expr, 'async' AS sync_mode, "
-                    "ai_max_retries AS max_retries, schema_version AS definition_version "
+                    "SELECT column_name AS `Field`, ai_column_expr AS `Expression`, 'async' AS `Sync_mode`, "
+                    "ai_max_retries AS `Max_retries`, schema_version AS `Definition_version` "
                     "FROM oceanbase.__all_column WHERE table_id=%lu "
                     "AND ai_column_expr IS NOT NULL AND ai_column_expr<>''", show_table_id))) {
                 } else {

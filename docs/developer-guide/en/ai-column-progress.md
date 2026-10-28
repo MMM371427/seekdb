@@ -195,3 +195,18 @@ and nine strict-suite assertions, including the default session mode.
 Bison 2.4.1 generation with -Werror, Python compilation, Bash syntax and diff
 checks passed; native build and these new runtime cases remain pending.
 Lifecycle changes and per-column result conversion handling remain outstanding.
+
+
+## Confirmed column-wide strict reads and SHOW filter follow-up
+
+The user rebuilt `8987dc5e` and all nine strict-read/retry assertions passed in
+`/home/magic/seekdb-ai-column-run-e9Losr`, including expected error checks for
+READY-row reads while another row is unfinished and UPDATE/DELETE predicates.
+Together with previous worker/T1/vector/backfill/manual checks, 68 named
+assertions have passed across reported runs.
+
+SHOW returned the expected AI name, async mode and retry count, but its WHERE
+filter could not bind Field: display aliases existed only in the outer SELECT.
+All display aliases now live in the derived source, where both native SHOW
+WHERE and LIKE resolution bind them. Existing SHOW regression covers both
+filters. Whitespace validation passed; native build/runtime rerun pending.
