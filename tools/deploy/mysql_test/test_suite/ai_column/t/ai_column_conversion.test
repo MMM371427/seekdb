@@ -1,0 +1,79 @@
+# Bad typed results must not discard successful siblings in the same group.
+connection default;
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19125
+create database ai_column_conversion;
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('conversion_model',
+ '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('conversion_ep',
+ '{"ai_model_name":"conversion_model","url":"http://127.0.0.1:19125/v1/chat/completions","access_key":"conversion-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_conversion.mixed(
+ id bigint primary key, content varchar(100),
+ good_text varchar(200) AI COLUMN (AI_COMPLETE('conversion_model',concat('text-valid ',content))) WITH(max_retries=0),
+ good_json json AI COLUMN (AI_COMPLETE('conversion_model',concat('json-valid ',content))) WITH(max_retries=0),
+ bad_int bigint AI COLUMN (AI_COMPLETE('conversion_model',concat('bad-int-always ',content))) WITH(max_retries=0),
+ bad_json json AI COLUMN (AI_COMPLETE('conversion_model',concat('bad-json-always ',content))) WITH(max_retries=0),
+ bad_overflow bigint AI COLUMN (AI_COMPLETE('conversion_model',concat('bad-int-overflow ',content))) WITH(max_retries=0),
+ bad_short varchar(3) AI COLUMN (AI_COMPLETE('conversion_model',concat('too-long ',content))) WITH(max_retries=0)
+);
+insert into ai_column_conversion.mixed(id,content) values(1,'row');
+let $retry=150;
+let $ready=0;
+while ($retry)
+{
+ let $ready=`select count(*)=1 from ai_column_conversion.mixed
+  where AI_COLUMN_STATUS(good_text)='READY' and AI_COLUMN_STATUS(good_json)='READY'
+   and AI_COLUMN_STATUS(bad_int)='FAILED' and AI_COLUMN_STATUS(bad_json)='FAILED'
+   and AI_COLUMN_STATUS(bad_short)='FAILED' and AI_COLUMN_STATUS(bad_overflow)='FAILED'`;
+ if ($ready == 1) { let $retry=0; }
+ if ($ready == 0) { --real_sleep 0.1
+  dec $retry; }
+}
+eval select $ready=1 as conversion_terminal_states;
+select count(*)=1 as conversion_preserves_good_siblings from ai_column_conversion.mixed
+ where good_text='mock:text-valid row'
+ and json_unquote(json_extract(good_json,concat(char(36),'.input')))='json-valid row';
+select count(*)=1 as conversion_bad_values_stay_null from ai_column_conversion.mixed
+ where bad_int is null and bad_json is null and bad_short is null and bad_overflow is null;
+select count(*)=0 as conversion_terminal_tasks_drained
+ from oceanbase.__all_ai_column_task q join oceanbase.__all_table t on t.table_id=q.table_id
+ join oceanbase.__all_database d on d.database_id=t.database_id
+ where d.database_name='ai_column_conversion';
+create table ai_column_conversion.retried(
+ id bigint primary key, content varchar(100),
+ stable varchar(200) AI COLUMN (AI_COMPLETE('conversion_model',concat('stable-cache ',content))) WITH(max_retries=1),
+ number bigint AI COLUMN (AI_COMPLETE('conversion_model',concat('bad-int-once ',content))) WITH(max_retries=1)
+);
+insert into ai_column_conversion.retried(id,content) values(1,'row');
+let $retry=100;
+let $ready=0;
+while ($retry)
+{
+ let $ready=`select count(*)=1 from ai_column_conversion.retried where AI_COLUMN_STATUS(number)='RETRY'`;
+ if ($ready == 1) { let $retry=0; }
+ if ($ready == 0) { --real_sleep 0.1
+  dec $retry; }
+}
+eval select $ready=1 as conversion_retry_state_observed;
+select count(*)=1 as conversion_retry_hides_cached_sibling from ai_column_conversion.retried
+ where stable is null and number is null;
+let $retry=150;
+let $ready=0;
+while ($retry)
+{
+ let $ready=`select count(*)=1 from ai_column_conversion.retried
+  where number=7 and stable='mock:stable-cache row'
+   and AI_COLUMN_STATUS(number)='READY' and AI_COLUMN_STATUS(stable)='READY'`;
+ if ($ready == 1) { let $retry=0; }
+ if ($ready == 0) { --real_sleep 0.1
+  dec $retry; }
+}
+eval select $ready=1 as conversion_retry_eventually_ready;
+select count(*)=0 as conversion_retry_tasks_drained
+ from oceanbase.__all_ai_column_task q join oceanbase.__all_table t on t.table_id=q.table_id
+ join oceanbase.__all_database d on d.database_id=t.database_id
+ where d.database_name='ai_column_conversion';
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19125 conversion-retry
+drop database ai_column_conversion;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('conversion_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('conversion_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19125

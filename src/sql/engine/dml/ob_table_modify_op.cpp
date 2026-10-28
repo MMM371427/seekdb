@@ -233,7 +233,36 @@ int ai_set_row_state(ObMySQLProxy &proxy,const AIWork &w,int64_t state)
   if (OB_SUCC(ret)) ret=proxy.write(sql.ptr(),affected);
   return ret;
 }
-int ai_publish(ObMySQLProxy &proxy,const std::vector<AIWork> &work,bool failed)
+bool ai_conversion_error(int error)
+{
+  if (error <= OB_ERR_INVALID_JSON_TEXT && error >= OB_ERR_JSON_DOCUMENT_NULL_KEY) {
+    return true;
+  }
+  switch (error) {
+    case OB_OPERATE_OVERFLOW:
+    case OB_INVALID_DATE_FORMAT:
+    case OB_INVALID_DATE_FORMAT_END:
+    case OB_INVALID_DATE_VALUE:
+    case OB_DATA_OUT_OF_RANGE:
+    case OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD:
+    case OB_ERR_DATA_TRUNCATED:
+    case OB_ERR_INCORRECT_STRING_VALUE:
+    case OB_DATETIME_FUNCTION_OVERFLOW:
+    case OB_ERR_DOUBLE_TRUNCATED:
+    case OB_INTEGER_PRECISION_OVERFLOW:
+    case OB_DECIMAL_PRECISION_OVERFLOW:
+    case OB_NUMERIC_OVERFLOW:
+    case OB_ERR_DATA_TOO_LONG:
+    case OB_ERR_TRUNCATED_WRONG_VALUE:
+    case OB_ERR_INVALID_JSON_VALUE_FOR_CAST:
+    case OB_ERR_INVALID_VECTOR_DIM:
+    case OB_ERR_ARRAY_TYPE_MISMATCH:
+      return true;
+    default:
+      return false;
+  }
+}
+int ai_publish(ObMySQLProxy &proxy,const std::vector<AIWork> &work,bool probe)
 {
   int ret=OB_SUCCESS; int64_t affected=0;
   ObSqlString sql,cleanup;
@@ -246,12 +275,12 @@ int ai_publish(ObMySQLProxy &proxy,const std::vector<AIWork> &work,bool failed)
     if (i>0) ret=sql.append(",");
     if (OB_SUCC(ret)) ret=ai_identifier(sql,ai_string(w.column));
     if (OB_SUCC(ret)) ret=sql.append("=");
-    if (OB_SUCC(ret) && !failed && w.state==2 && !w.null_output) {
+    if (OB_SUCC(ret) && w.state==2 && !w.null_output) {
       ret=sql.append("CONVERT(");
       if (OB_SUCC(ret)) ret=ai_hex(sql,ai_string(w.output));
       if (OB_SUCC(ret)) ret=sql.append(" USING utf8mb4)");
     } else if (OB_SUCC(ret)) ret=sql.append("NULL");
-    if (OB_SUCC(ret)) ret=sql.append_fmt(",`__ai_state_%ld`=%d",w.cid,failed||w.state==4?4:2);
+    if (OB_SUCC(ret)) ret=sql.append_fmt(",`__ai_state_%ld`=%d",w.cid,w.state==4?4:2);
   }
   if (OB_SUCC(ret)) ret=sql.append(" WHERE ");
   for (size_t i=0;OB_SUCC(ret)&&i<work.size();++i) {
@@ -272,7 +301,7 @@ int ai_publish(ObMySQLProxy &proxy,const std::vector<AIWork> &work,bool failed)
     }
     if (OB_SUCC(ret)) ret=tx.write("SET SESSION sql_mode='STRICT_ALL_TABLES'",affected);
     if (OB_SUCC(ret)) ret=tx.write(sql.ptr(),affected);
-    if (OB_SUCC(ret)&&affected!=0) ret=tx.write(cleanup.ptr(),affected);
+    if (OB_SUCC(ret)&&affected!=0&&!probe) ret=tx.write(cleanup.ptr(),affected);
     ObSqlString restore;
     int restore_ret=restore.append("SET SESSION sql_mode=");
     // sql_mode accepts canonical ASCII mode names, not hex literal tokens.
@@ -285,7 +314,8 @@ int ai_publish(ObMySQLProxy &proxy,const std::vector<AIWork> &work,bool failed)
     }
     if (OB_SUCCESS==restore_ret) restore_ret=tx.write(restore.ptr(),affected);
     if (OB_SUCC(ret)) ret=restore_ret;
-    int end_ret=tx.end(OB_SUCC(ret));
+    // Conversion probes use native column/index validation but always roll back.
+    int end_ret=tx.end(OB_SUCC(ret) && !probe);
     if (OB_SUCC(ret)) ret=end_ret;
   }
   return ret;
@@ -448,7 +478,34 @@ int AIColumnRuntime::process_pending(ObMySQLProxy &proxy)
   }
   if (complete) {
     ret=ai_publish(proxy,work,false);
-    if ((ret<=-5000&&ret>=-5999)||ret==OB_ERR_INVALID_VECTOR_DIM) ret=ai_publish(proxy,work,true);
+    if (ai_conversion_error(ret)) {
+      const int publication_error = ret;
+      bool identified = false;
+      bool retry_pending = false;
+      ret = OB_SUCCESS;
+      for (AIWork &w : work) {
+        if (w.state != 2) { continue; }
+        const std::vector<AIWork> single(1, w);
+        const int conversion_ret = ai_publish(proxy, single, true);
+        if (ai_conversion_error(conversion_ret)) {
+          identified = true;
+          LOG_WARN("AI column result conversion failed", K(conversion_ret), K(w.tid), K(w.cid));
+          w.output.clear();
+          w.null_output = false;
+          if (w.retries < w.limit) {
+            ++w.retries;
+            w.state = 3;
+            retry_pending = true;
+          } else { w.state = 4; }
+          if (OB_FAIL(ai_set_task(proxy, w, w.state, conversion_ret))) { return ret; }
+          if (w.state == 3 && OB_FAIL(ai_set_row_state(proxy, w, 3))) { return ret; }
+        } else if (conversion_ret != OB_SUCCESS) { return conversion_ret; }
+      }
+      // Keep successful sibling caches hidden while a bad column retries.
+      // The final UPDATE still publishes every valid result/state atomically.
+      if (!identified) { ret = publication_error; }
+      else if (!retry_pending) { ret = ai_publish(proxy, work, false); }
+    }
   }
   return ret;
 }

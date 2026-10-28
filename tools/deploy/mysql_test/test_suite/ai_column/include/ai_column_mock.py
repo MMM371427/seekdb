@@ -154,7 +154,15 @@ def serve(port):
                     ]
                 }
             else:
-                if "base-10 integer" in system_text:
+                if user_text.startswith("bad-int-once ") and attempt == 1:
+                    content = "not-an-integer"
+                elif user_text.startswith("bad-int-overflow "):
+                    content = "999999999999999999999999999999999999"
+                elif user_text.startswith("bad-int-always "):
+                    content = "not-an-integer"
+                elif user_text.startswith("bad-json-always "):
+                    content = "{broken"
+                elif "base-10 integer" in system_text:
                     content = "7"
                 elif "valid JSON value" in system_text:
                     content = json.dumps(
@@ -219,6 +227,11 @@ def assert_events(port, assertion):
             any("slow-old" in event["user"] for event in events)
             and any("fast-new" in event["user"] for event in events)
         )
+    elif assertion == "conversion-retry":
+        stable = [e for e in events if e["user"].startswith("stable-cache ")]
+        retried = [e for e in events if e["user"].startswith("bad-int-once ")]
+        ok = (len(stable) == 1 and len(retried) == 2
+              and [e["attempt"] for e in retried] == [1, 2])
     elif assertion == "embedding":
         ok = any(event["path"].endswith("/embeddings") for event in events)
     else:

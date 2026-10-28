@@ -4,6 +4,10 @@ import argparse
 from pathlib import Path
 
 CHECKS = {
+    'ai_column_conversion': '''conversion_terminal_states conversion_preserves_good_siblings
+        conversion_bad_values_stay_null conversion_terminal_tasks_drained
+        conversion_retry_state_observed conversion_retry_hides_cached_sibling
+        conversion_retry_eventually_ready conversion_retry_tasks_drained'''.split(),
     'ai_column_show': 'show_ai_name show_ai_mode show_ai_retries show_ai_where show_ai_like'.split(),
     'ai_column_retry_strict': '''initial_results_ready strict_read_defaults_off
         ready_label_is_readable rejected_writes_leave_rows_unchanged

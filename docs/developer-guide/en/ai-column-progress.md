@@ -210,3 +210,26 @@ filter could not bind Field: display aliases existed only in the outer SELECT.
 All display aliases now live in the derived source, where both native SHOW
 WHERE and LIKE resolution bind them. Existing SHOW regression covers both
 filters. Whitespace validation passed; native build/runtime rerun pending.
+
+
+## Unified native regression and isolated conversion failures
+
+The user rebuilt `a17a9ef6` and all nine SQL cases passed in
+`/home/magic/seekdb-ai-column-run-l3JBcU`: SHOW, status, manual retry, T1 DML,
+worker, vector index, backfill, DDL and strict retry/read. The strict result
+checker verified all 78 named booleans in this single run; status negative
+checks also passed through mysqltest.
+
+Conversion failures now isolate the invalid result with native UPDATE probes
+that always roll back, preserving successful sibling caches. Only the bad
+column consumes retries; cached siblings stay hidden until the final atomic
+group UPDATE. Terminal bad results publish NULL/FAILED beside READY siblings.
+Only recognized value/conversion errors enter this path; schema and transient
+errors are not misclassified as bad model output. Added eight conversion SQL
+assertions covering invalid integers, overflow, JSON, length and cached retries,
+plus an HTTP request-count assertion.
+
+The mock's actual HTTP responses/request counts, a standalone C++ check using
+repository error constants, Python syntax and diff checks passed. Native
+compilation, conversion SQL and worker/vector regressions remain pending for
+this new change. Column-definition lifecycle edge cases remain outstanding.
