@@ -274,7 +274,14 @@ int ai_publish(ObMySQLProxy &proxy,const std::vector<AIWork> &work,bool failed)
     if (OB_SUCC(ret)&&affected!=0) ret=tx.write(cleanup.ptr(),affected);
     ObSqlString restore;
     int restore_ret=restore.append("SET SESSION sql_mode=");
-    if (OB_SUCCESS==restore_ret) restore_ret=ai_hex(restore,ai_string(mode));
+    // sql_mode accepts canonical ASCII mode names, not hex literal tokens.
+    if (OB_SUCCESS==restore_ret) {
+      const bool valid_mode = std::all_of(mode.begin(), mode.end(), [](unsigned char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+            || (c >= '0' && c <= '9') || c == '_' || c == ',';
+      });
+      restore_ret = valid_mode ? restore.append_fmt("'%s'", mode.c_str()) : OB_INVALID_ARGUMENT;
+    }
     if (OB_SUCCESS==restore_ret) restore_ret=tx.write(restore.ptr(),affected);
     if (OB_SUCC(ret)) ret=restore_ret;
     int end_ret=tx.end(OB_SUCC(ret));
@@ -370,6 +377,9 @@ int AIColumnRuntime::process_pending(ObMySQLProxy &proxy)
       return OB_SUCCESS;
     }
     if (cached) { if (call_ret!=OB_SUCCESS) return call_ret; continue; }
+    if (call_ret != OB_SUCCESS) {
+      LOG_WARN("AI column model evaluation failed", K(call_ret), K(w.tid), K(w.cid));
+    }
     if (call_ret==OB_SUCCESS) w.state=2;
     else if (w.retries<w.limit) { ++w.retries; w.state=3; complete=false; }
     else w.state=4;

@@ -76,7 +76,7 @@ for test_case in "${TEST_CASES[@]}"; do
     echo "FAIL: $test_case"
     tail -n 100 "$RUN_DIR/$test_case.log"
     echo "--- Server error context"
-    grep -n -B 5 -A 8 -E -- 'ret=-40[0-9]+|errcode=-40[0-9]+|AI column worker iteration failed' \
+    grep -n -B 5 -A 8 -E -- 'AI column model evaluation failed|AI column worker iteration failed|errcode=-5[0-9]+' \
       "$RUN_DIR/log/seekdb.log" | tail -n 100 || true
     exit 1
   fi
