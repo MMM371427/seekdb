@@ -2469,6 +2469,35 @@ all_objauth_mysql_def = dict(
 def_table_schema(**all_objauth_mysql_def)
 def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
 
+# Durable work is keyed by the physical row and AI column. Request tokens
+# distinguish a new row version from an obsolete model response.
+def_table_schema(
+  owner = 'seekdb-ai-column',
+  table_name = '__all_ai_column_task',
+  table_id = '1135',
+  table_type = 'SYSTEM_TABLE',
+  gm_columns = ['gmt_create', 'gmt_modified'],
+  is_cluster_private = False,
+  rowkey_columns = [
+    ('table_id', 'int'),
+    ('column_id', 'int'),
+    ('rowkey_hash', 'varchar:64')
+  ],
+  normal_columns = [
+    ('request_id', 'varchar:64', 'false'),
+    ('request_token', 'varchar:64', 'false'),
+    ('definition_version', 'int', 'false'),
+    ('rowkey_predicate', 'longtext', 'false'),
+    ('state', 'int', 'false', '0'),
+    ('retry_count', 'int', 'false', '0'),
+    ('max_retries', 'int', 'false', '2'),
+    ('eligible_ts', 'timestamp', 'true'),
+    ('result', 'longtext', 'true'),
+    ('error_code', 'int', 'false', '0')
+  ]
+)
+
+
 
 # Reserved position (placeholder before this line)
 # Placeholder suggestion for this section: Use actual table names for placeholders

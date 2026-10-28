@@ -92,3 +92,15 @@ bazel test //unittest/sql:sql_tests --test_filter='AIColumn*.*'
   DDL/status cases, and shuts down only the process that it started.
 - The launcher passed Bash syntax and diff checks; it has not run against a
   seekdb binary in this workspace. Async DML, worker and RETRY remain incomplete.
+
+## Runtime regression and durable queue checkpoint
+
+- The user reported a successful incremental build and both initial SQL cases
+  passing after `721ea3af`: `ai_column_ddl` and `ai_column_status`, using fresh
+  instance `/home/magic/seekdb-ai-column-run-7wm5nO`. This validates the tested
+  DDL/status/strict-read paths, not the unfinished async worker.
+- Added native system table `__all_ai_column_task` (1135) with row/column key,
+  request grouping and token, definition version, retry deadline/counters,
+  cached result and error code. Native schema generation and diff checks pass.
+- Enqueue, transaction rollback integration and background execution are still
+  pending; the new queue definition alone does not schedule model requests.
