@@ -71,6 +71,7 @@ for test_case in "${TEST_CASES[@]}"; do
       --port="$PORT" --user=root --database=oceanbase --logdir="$RUN_DIR" \
       --test-file="$TASK_ROOT/tools/deploy/mysql_test/test_suite/ai_column/t/$test_case.test" \
       > "$RUN_DIR/$test_case.log" 2>&1; then
+    python3 "$TASK_ROOT/unittest/sql/check_ai_column_results.py" "$test_case" "$RUN_DIR/$test_case.log"
     echo "PASS: $test_case"
   else
     echo "FAIL: $test_case"
