@@ -1020,6 +1020,7 @@ int ObDMLResolver::rewrite_ai_column_read(ObRawExpr *&expr)
                      ObUInt64Type, table->ref_id_, table_id))) {
       } else if (OB_FAIL(ObRawExprUtils::build_const_uint_expr(*params_.expr_factory_,
                      ObUInt64Type, column->get_column_id(), column_id))) {
+      } else if (OB_FAIL(guard->init_param_exprs(4))) {
       } else if (OB_FAIL(guard->add_param_expr(expr))) {
       } else if (OB_FAIL(guard->add_param_expr(state->expr_))) {
       } else if (OB_FAIL(guard->add_param_expr(table_id))) {
