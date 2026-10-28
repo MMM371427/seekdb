@@ -994,11 +994,11 @@ int ObDMLResolver::build_ai_column_wide_state(const TableItem &table,
   ObSqlString sql;
   auto identifier = [&sql](const ObString &name) -> int {
     int rc = sql.append("`");
-    for (int64_t i = 0; OB_SUCC(rc) && i < name.length(); ++i) {
+    for (int64_t i = 0; rc == OB_SUCCESS && i < name.length(); ++i) {
       if (name.ptr()[i] == '`') { rc = sql.append("``"); }
       else { rc = sql.append(name.ptr() + i, 1); }
     }
-    if (OB_SUCC(rc)) { rc = sql.append("`"); }
+    if (rc == OB_SUCCESS) { rc = sql.append("`"); }
     return rc;
   };
   // Resolve an uncorrelated scalar aggregate in the same native statement and
