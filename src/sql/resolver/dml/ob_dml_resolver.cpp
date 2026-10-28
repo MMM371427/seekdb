@@ -1013,22 +1013,18 @@ int ObDMLResolver::build_ai_column_wide_state(const TableItem &table,
   } else {
     ObParser parser(*allocator_, session_info_->get_sql_mode(), session_info_->get_charsets4parser());
     ParseResult parsed;
-    ObQueryRefRawExpr *query = nullptr;
     if (OB_FAIL(parser.parse(sql.string(), parsed))) {
+      LOG_WARN("AI column strict-read subquery parsing failed", K(ret), K(sql));
     } else if (parsed.result_tree_ == nullptr || parsed.result_tree_->num_child_ != 1) {
       ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_REF_QUERY, query))) {
-    } else {
-      ObSelectResolver resolver(params_);
-      resolver.set_current_level(current_level_ + 1);
-      resolver.set_current_view_level(current_view_level_);
-      resolver.set_parent_namespace_resolver(this);
-      ObSubQueryInfo info;
-      info.sub_query_ = parsed.result_tree_->children_[0];
-      info.ref_expr_ = query;
-      if (OB_FAIL(do_resolve_subquery_info(info, resolver))) {
-      } else if (OB_FAIL(query->formalize(session_info_))) {
-      } else { state = query; }
+    } else if (OB_FAIL(resolve_sql_expr(*parsed.result_tree_->children_[0], state))) {
+      // Use the normal expression/subquery entry point. SELECT's override
+      // installs subquery scope, CTE context and execution-parameter ownership.
+      LOG_WARN("AI column strict-read subquery resolution failed", K(ret), K(sql));
+    } else if (state == nullptr) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(state->formalize(session_info_))) {
+      LOG_WARN("AI column strict-read subquery formalization failed", K(ret), K(sql));
     }
     parser.free_result(parsed);
   }
