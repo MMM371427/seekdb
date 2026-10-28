@@ -207,7 +207,7 @@ int ai_row_guard(ObSqlString &sql,const AIWork &w)
 {
   int ret=sql.append_fmt("(%s) AND `__ai_request_%ld`=",w.predicate.c_str(),w.cid);
   if (OB_SUCC(ret)) ret=ai_hex(sql,ai_string(w.token));
-  if (OB_SUCC(ret)) ret=sql.append_fmt(" AND EXISTS(SELECT 1 FROM oceanbase.__all_ai_column WHERE table_id=%ld AND column_id=%ld AND definition_version=%ld)",w.tid,w.cid,w.version);
+  if (OB_SUCC(ret)) ret=sql.append_fmt(" AND EXISTS(SELECT 1 FROM oceanbase.__all_column WHERE table_id=%ld AND column_id=%ld AND schema_version=%ld)",w.tid,w.cid,w.version);
   return ret;
 }
 int ai_set_task(ObMySQLProxy &proxy,const AIWork &w,int64_t state,int error)
@@ -298,7 +298,7 @@ int AIColumnRuntime::process_pending(ObMySQLProxy &proxy)
   }
   std::vector<AIWork> work;
   ObSqlString load;
-  if (OB_FAIL(load.append("SELECT q.*,a.column_name,a.normalized_expr,t.table_name,d.database_name,q.eligible_ts<=NOW(6) AS eligible FROM oceanbase.__all_ai_column_task q JOIN oceanbase.__all_ai_column a ON a.table_id=q.table_id AND a.column_id=q.column_id AND a.definition_version=q.definition_version JOIN oceanbase.__all_table t ON t.table_id=q.table_id JOIN oceanbase.__all_database d ON d.database_id=t.database_id WHERE q.request_id="))) {}
+  if (OB_FAIL(load.append("SELECT /*+ LEADING(q c t d) USE_NL(c t d) */ q.*,c.column_name,c.ai_column_expr AS normalized_expr,t.table_name,d.database_name,q.eligible_ts<=NOW(6) AS eligible FROM oceanbase.__all_ai_column_task q JOIN oceanbase.__all_column c ON c.table_id=q.table_id AND c.column_id=q.column_id AND c.schema_version=q.definition_version JOIN oceanbase.__all_table t ON t.table_id=q.table_id JOIN oceanbase.__all_database d ON d.database_id=t.database_id WHERE q.request_id="))) {}
   else ret=ai_hex(load,ai_string(group));
   if (OB_FAIL(ret)) return ret;
   {
