@@ -79,3 +79,16 @@ bazel test //unittest/sql:sql_tests --test_filter='AIColumn*.*'
   metadata for JSON and VECTOR. Missing outer-join rows propagate NULL.
 - Extended the status mysqltest with strict-read cases. The generator runs and
   `git diff --check` passed; compilation and SQL execution remain pending.
+
+## WSL build and startup follow-up
+
+- The user reported a complete native Release build of commit `11aaf265`:
+  `[100%] Built target seekdb`. SQL runtime verification is still pending.
+- The first isolated launch used a 1 GiB log disk and failed with
+  `OB_RESOURCE_UNIT_VALUE_INVALID` (-4736). The native resource minimum is
+  2 GiB (`ObServerResource::SERVER_MIN_LOG_DISK_SIZE`).
+- `bash unittest/sql/run_ai_column_checks.sh` now creates fresh storage with
+  a 2 GiB log disk, captures connection and server diagnostics, runs the initial
+  DDL/status cases, and shuts down only the process that it started.
+- The launcher passed Bash syntax and diff checks; it has not run against a
+  seekdb binary in this workspace. Async DML, worker and RETRY remain incomplete.
