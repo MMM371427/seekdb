@@ -1,0 +1,14 @@
+load("//bazel:seekdb_module_cc_test.bzl", "seekdb_module_cc_test")
+
+package(default_testonly = True)
+
+seekdb_module_cc_test(
+    name = "sql_tests",
+    srcs = [
+        "parser/test_ai_column_parser.cpp",
+        "schema/test_ai_column_schema.cpp",
+    ],
+    test_hdrs = [],
+    module_interface = "//src/sql:sql_unit_test_interface",
+    shard_count = 1,
+)

@@ -1045,6 +1045,8 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprInnerInfoColsColumnKeyPrinter);
     REG_OP(ObExprVectorL2Squared);
     REG_OP(ObExprAIComplete);
+    REG_OP(AIColumnStatus);
+    REG_OP(AIColumnRead);
     REG_OP(ObExprAIEmbed);
     REG_OP(ObExprAIRerank);
     REG_OP(ObExprAIPrompt);

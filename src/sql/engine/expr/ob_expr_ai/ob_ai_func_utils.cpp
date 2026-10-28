@@ -1280,6 +1280,35 @@ int ObAIFuncUtils::get_ai_func_info(ObIAllocator &allocator, const ObString &mod
   return ret;
 }
 
+namespace {
+// The normalized AI-column expression supplies a system instruction without
+// changing the user's prompt or leaking this internal option to the provider.
+int split_ai_column_config(ObIAllocator &allocator, ObJsonObject *config,
+                           ObString &system_prompt, ObJsonObject *&forwarded)
+{
+  int ret = OB_SUCCESS;
+  forwarded = config;
+  ObJsonNode *instruction = config == nullptr ? nullptr
+      : config->get_value("__ai_column_system_prompt");
+  if (instruction != nullptr) {
+    if (instruction->json_type() != ObJsonNodeType::J_STRING) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_object(allocator, forwarded))) {
+    } else {
+      system_prompt = static_cast<ObJsonString *>(instruction)->get_str();
+      for (int64_t i = 0; OB_SUCC(ret) && i < config->element_count(); ++i) {
+        ObString key;
+        if (OB_FAIL(config->get_key(i, key))) {
+        } else if (key != "__ai_column_system_prompt") {
+          ret = forwarded->add(key, config->get_value(i));
+        }
+      }
+    }
+  }
+  return ret;
+}
+} // namespace
+
 int ObAIFuncModel::call_completion(ObString &prompt, ObJsonObject *config, ObString &result)
 {
   int ret = OB_SUCCESS;
@@ -1293,13 +1322,15 @@ int ObAIFuncModel::call_completion(ObString &prompt, ObJsonObject *config, ObStr
   ObAIFuncClient client;
   ObString unencrypted_access_key;
   ObString request_model_name = get_request_model_name();
-  if (!is_completion_type()) {
+  ObJsonObject *forwarded_config = nullptr;
+  if (OB_FAIL(split_ai_column_config(*allocator_, config, prompt_str, forwarded_config))) {
+  } else if (!is_completion_type()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_complete, info type is not completion");
   } else if (OB_FAIL(ObAIFuncUtils::get_complete_provider(*allocator_, endpoint_info_.get_provider(), complete_provider))) {
   } else if (OB_FAIL(endpoint_info_.get_unencrypted_access_key(*allocator_, unencrypted_access_key))) {
   } else if (OB_FAIL(complete_provider->get_header(*allocator_, unencrypted_access_key, headers))) {
-  } else if (OB_FAIL(complete_provider->get_body(*allocator_, request_model_name, prompt_str, prompt, config, body))) {
+  } else if (OB_FAIL(complete_provider->get_body(*allocator_, request_model_name, prompt_str, prompt, forwarded_config, body))) {
   } else if (OB_FAIL(client.send_post(*allocator_, endpoint_info_.get_url(), headers, body, response))) {
   } else if (OB_FAIL(complete_provider->parse_output(*allocator_, response, result_base))) {
   } else if (OB_FAIL(ObAIFuncJsonUtils::print_json_to_str(*allocator_, result_base, result_str))) {
@@ -1334,7 +1365,9 @@ int ObAIFuncModel::call_completion_vector(ObArray<ObString> &prompts, ObJsonObje
   ObAIFuncClient client;
   ObString unencrypted_access_key;
   ObString request_model_name = get_request_model_name();
-  if (!is_completion_type()) {
+  ObJsonObject *forwarded_config = nullptr;
+  if (OB_FAIL(split_ai_column_config(*allocator_, config, prompt_str, forwarded_config))) {
+  } else if (!is_completion_type()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_complete, info type is not completion");
   } else if (OB_FAIL(ObAIFuncUtils::get_complete_provider(*allocator_, endpoint_info_.get_provider(), complete_provider))) {
@@ -1343,7 +1376,7 @@ int ObAIFuncModel::call_completion_vector(ObArray<ObString> &prompts, ObJsonObje
   } else {
     for (int i = 0; OB_SUCC(ret) && i < prompts.count(); i++) {
       ObString prompt = prompts[i];
-      if (OB_FAIL(complete_provider->get_body(*allocator_, request_model_name, prompt_str, prompt, config, body))) {
+      if (OB_FAIL(complete_provider->get_body(*allocator_, request_model_name, prompt_str, prompt, forwarded_config, body))) {
       } else if (OB_FAIL(body_array.push_back(body))) {
       }
     }

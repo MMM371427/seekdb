@@ -109,6 +109,17 @@ struct ObDefaultValueRes
 class ObDDLResolver : public ObStmtResolver
 {
 public:
+  static int build_ai_hidden_column(const share::schema::ObColumnSchemaV2 &result,
+                                     int64_t kind, uint64_t column_id,
+                                     share::schema::ObColumnSchemaV2 &hidden);
+  static int check_ai_column_dependencies(const share::schema::ObTableSchema &table_schema,
+                                          common::ObIAllocator &allocator);
+protected:
+  int resolve_ai_column_definition(share::schema::ObColumnSchemaV2 &column,
+                                    const ParseNode &node,
+                                    const ParseNode &type_node,
+                                    const ObColumnResolveStat &stat);
+public:
   enum INDEX_TYPE {
     NOT_SPECIFIED = 0,
     LOCAL_INDEX = 1,

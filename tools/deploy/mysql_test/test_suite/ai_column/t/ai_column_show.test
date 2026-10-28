@@ -1,0 +1,24 @@
+connection default;
+create database ai_column_show;
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('ai_column_show_model',
+ '{"type":"completion","model_name":"unused"}');
+create table ai_column_show.docs(
+ id bigint primary key, content varchar(100),
+ tags json AI COLUMN (AI_COMPLETE('ai_column_show_model',content)) WITH(max_retries=2)
+);
+let $field=query_get_value(SHOW AI COLUMNS FROM ai_column_show.docs, Field, 1);
+eval select '$field'='tags' as show_ai_name;
+let $mode=query_get_value(SHOW AI COLUMNS FROM ai_column_show.docs, Sync_mode, 1);
+eval select '$mode'='async' as show_ai_mode;
+let $retries=query_get_value(SHOW AI COLUMNS FROM ai_column_show.docs, Max_retries, 1);
+eval select $retries=2 as show_ai_retries;
+let $field=query_get_value(SHOW AI COLUMNS FROM ai_column_show.docs WHERE Field='tags', Field, 1);
+eval select '$field'='tags' as show_ai_where;
+let $field=query_get_value(SHOW AI COLUMNS FROM docs FROM ai_column_show LIKE 'ta%', Field, 1);
+eval select '$field'='tags' as show_ai_like;
+create table ai_column_show.ordinary(id int);
+show ai columns from ai_column_show.ordinary;
+--error 1146
+show ai columns from ai_column_show.missing;
+drop database ai_column_show;
+call DBMS_AI_SERVICE.DROP_AI_MODEL('ai_column_show_model');

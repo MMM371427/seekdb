@@ -1,0 +1,77 @@
+connection default;
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19124
+create database ai_column_manual_retry;
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('manual_retry_model',
+  '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('manual_retry_ep',
+  '{"ai_model_name":"manual_retry_model","url":"http://127.0.0.1:19124/v1/chat/completions","access_key":"retry-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_manual_retry.docs(
+ id bigint primary key, category varchar(20), status varchar(20), content varchar(100),
+ result varchar(400) AI COLUMN (AI_COMPLETE('manual_retry_model',content)) WITH(max_retries=0),
+ label varchar(400) AI COLUMN (AI_COMPLETE('manual_retry_model',concat('Label: ',content))) WITH(max_retries=0)
+);
+insert into ai_column_manual_retry.docs(id,category,status,content)
+ values(1,'news','active','one'),(2,'sports','active','two');
+let $retry=150;
+let $ready=0;
+while ($retry)
+{
+ let $ready=`select count(*)=2 from ai_column_manual_retry.docs where result is not null and label is not null`;
+ if ($ready == 1) { let $retry=0; }
+ if ($ready == 0) { --real_sleep 0.1
+  dec $retry; }
+}
+eval select $ready=1 as retry_initial_rows_ready;
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19124
+start transaction;
+alter table ai_column_manual_retry.docs retry ai column result where id=1;
+select count(*)=1 as retry_selected_row_invalidated from ai_column_manual_retry.docs
+ where id=1 and result is null and label is not null;
+select count(*)=1 as retry_unselected_row_preserved from ai_column_manual_retry.docs
+ where id=2 and result is not null and label is not null;
+rollback;
+select count(*)=2 as retry_rollback_restores_results from ai_column_manual_retry.docs
+ where result is not null and label is not null;
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19124 no-requests
+--error 1235
+alter table ai_column_manual_retry.docs retry ai column content;
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19124
+alter table ai_column_manual_retry.docs retry ai column result where id=1;
+let $retry=150;
+let $ready=0;
+while ($retry)
+{
+ let $ready=`select AI_COLUMN_STATUS(result)='FAILED' from ai_column_manual_retry.docs where id=1`;
+ if ($ready == 1) { let $retry=0; }
+ if ($ready == 0) { --real_sleep 0.1
+  dec $retry; }
+}
+eval select $ready=1 as retry_offline_row_failed;
+start transaction;
+alter table ai_column_manual_retry.docs retry ai column result
+ where status='FAILED' and category='news';
+select count(*)=1 as retry_status_pseudo_column from ai_column_manual_retry.docs
+ where id=1 and AI_COLUMN_STATUS(result)='PENDING' and label is not null;
+rollback;
+start transaction;
+alter table ai_column_manual_retry.docs retry ai column result
+ where `status`='active' and id=2;
+select count(*)=1 as retry_quoted_business_status from ai_column_manual_retry.docs
+ where id=2 and AI_COLUMN_STATUS(result)='PENDING' and label is not null;
+rollback;
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19124
+alter table ai_column_manual_retry.docs retry ai column result;
+let $retry=150;
+let $ready=0;
+while ($retry)
+{
+ let $ready=`select count(*)=2 from ai_column_manual_retry.docs where result is not null and label is not null`;
+ if ($ready == 1) { let $retry=0; }
+ if ($ready == 0) { --real_sleep 0.1
+  dec $retry; }
+}
+eval select $ready=1 as retry_all_rows_ready;
+drop database ai_column_manual_retry;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('manual_retry_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('manual_retry_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19124

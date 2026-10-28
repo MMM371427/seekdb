@@ -342,7 +342,9 @@ all_column_def = dict(
       ('sub_data_type', 'int', 'false', '0'),
       ('skip_index_attr', 'int', 'false', '0'),
       ('lob_chunk_size', 'int', 'false', 'OB_DEFAULT_LOB_CHUNK_SIZE'),
-      ('local_session_vars', 'longtext', 'true')
+      ('local_session_vars', 'longtext', 'true'),
+      ('ai_column_expr', 'longtext', 'true'),
+      ('ai_max_retries', 'int', 'false', '2')
   ]
   )
 
@@ -2466,6 +2468,35 @@ all_objauth_mysql_def = dict(
   )
 def_table_schema(**all_objauth_mysql_def)
 def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
+
+# Durable work is keyed by the physical row and AI column. Request tokens
+# distinguish a new row version from an obsolete model response.
+def_table_schema(
+  owner = 'seekdb-ai-column',
+  table_name = '__all_ai_column_task',
+  table_id = '1135',
+  table_type = 'SYSTEM_TABLE',
+  gm_columns = ['gmt_create', 'gmt_modified'],
+  is_cluster_private = False,
+  rowkey_columns = [
+    ('table_id', 'int'),
+    ('column_id', 'int'),
+    ('rowkey_hash', 'varchar:64')
+  ],
+  normal_columns = [
+    ('request_id', 'varchar:64', 'false'),
+    ('request_token', 'varchar:64', 'false'),
+    ('definition_version', 'int', 'false'),
+    ('rowkey_predicate', 'longtext', 'false'),
+    ('state', 'int', 'false', '0'),
+    ('retry_count', 'int', 'false', '0'),
+    ('max_retries', 'int', 'false', '2'),
+    ('eligible_ts', 'timestamp', 'true'),
+    ('result', 'longtext', 'true'),
+    ('error_code', 'int', 'false', '0')
+  ]
+)
+
 
 
 # Reserved position (placeholder before this line)
@@ -13821,6 +13852,33 @@ def_table_schema(
       REQUEST_TRANSFORM_FN,
       RESPONSE_TRANSFORM_FN
     FROM oceanbase.__all_ai_model_endpoint WHERE ENDPOINT_ID != -1;
+  """.replace("\n", " ")
+)
+
+# AI column definitions are exposed from the persisted column schemas; using
+# a view avoids a second independently committed metadata copy on CREATE/ALTER.
+def_table_schema(
+  owner = 'seekdb-ai-column',
+  table_name = '__all_ai_column',
+  table_id = '21665',
+  table_type = 'SYSTEM_VIEW',
+  rowkey_columns = [], normal_columns = [], gm_columns = [],
+  view_definition = """
+    SELECT c.table_id, c.column_id, c.column_name,
+           c.ai_column_expr AS normalized_expr,
+           'async' AS sync_mode, c.ai_max_retries AS max_retries,
+           c.schema_version AS definition_version,
+           s.column_id AS state_column_id,
+           r.column_id AS request_column_id,
+           p.column_id AS result_spec_column_id
+    FROM oceanbase.__all_column c
+    JOIN oceanbase.__all_column s ON s.table_id = c.table_id
+      AND s.column_name = CONCAT('__ai_state_', c.column_id)
+    JOIN oceanbase.__all_column r ON r.table_id = c.table_id
+      AND r.column_name = CONCAT('__ai_request_', c.column_id)
+    JOIN oceanbase.__all_column p ON p.table_id = c.table_id
+      AND p.column_name = CONCAT('__ai_spec_', c.column_id)
+    WHERE c.ai_column_expr IS NOT NULL AND c.ai_column_expr <> ''
   """.replace("\n", " ")
 )
 

@@ -212,6 +212,14 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline const common::ObString &get_column_name_str() const { return column_name_; }
   inline const char *get_comment() const {return extract_str(comment_);}
   inline const common::ObString &get_comment_str() const { return comment_; }
+  // AI definitions are schema metadata. They are never SQL DEFAULT expressions:
+  // reading or inserting a pending AI result must not invoke a model.
+  inline bool is_ai_column() const { return !ai_column_expr_.empty(); }
+  inline const common::ObString &get_ai_column_expr() const { return ai_column_expr_; }
+  inline int set_ai_column_expr(const common::ObString &expr)
+  { return deep_copy_str(expr, ai_column_expr_); }
+  inline int64_t get_ai_max_retries() const { return ai_max_retries_; }
+  inline void set_ai_max_retries(int64_t retries) { ai_max_retries_ = retries; }
   inline const common::ObIArray<common::ObString> &get_extended_type_info() const { return extended_type_info_; }
   inline common::ObIArray<common::ObString> &get_extended_type_info() { return extended_type_info_; }
   inline uint64_t get_prev_column_id() const { return prev_column_id_; }
@@ -380,6 +388,8 @@ private:
   common::ObObj cur_default_value_; //collation must be same with the column
   common::ObString column_name_;
   common::ObString comment_;
+  common::ObString ai_column_expr_;
+  int64_t ai_max_retries_;
   common::ObArrayHelper<common::ObString> extended_type_info_;//used for enum and set
   uint64_t prev_column_id_;
   uint64_t next_column_id_;

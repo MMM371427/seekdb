@@ -395,7 +395,26 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
                */
               bool is_full = (1 == ((parse_tree.children_[0]->value_)&1));
               bool is_extended = (1 == (((parse_tree.children_[0]->value_)>>1)&1));
-              if (OB_UNLIKELY(((parse_tree.children_[0]->value_)>>2) != 0)) {
+              if (parse_tree.children_[0]->value_ == 4) {
+                bool allow_show = false;
+                if (OB_FAIL(schema_checker_->check_table_show(session_priv, enable_role_id_array,
+                        show_db_name, show_table_name, allow_show))) {
+                } else if (!allow_show) {
+                  ret = OB_ERR_NO_PRIVILEGE;
+                  LOG_USER_ERROR(OB_ERR_NO_PRIVILEGE, "SHOW AI COLUMNS");
+                } else if (OB_FAIL(sql_gen.init(params_.allocator_))) {
+                } else if (OB_FAIL(sql_gen.gen_select_str(
+                    "SELECT `Field`, `Expression`, `Sync_mode`, `Max_retries`, `Definition_version`"))) {
+                } else if (OB_FAIL(sql_gen.gen_from_str(
+                    "SELECT column_name AS `Field`, ai_column_expr AS `Expression`, 'async' AS `Sync_mode`, "
+                    "ai_max_retries AS `Max_retries`, schema_version AS `Definition_version` "
+                    "FROM oceanbase.__all_column WHERE table_id=%lu "
+                    "AND ai_column_expr IS NOT NULL AND ai_column_expr<>''", show_table_id))) {
+                } else {
+                  show_resv_ctx.like_column_ = ObString::make_string("Field");
+                  sql_gen.assign_sql_str(select_sql);
+                }
+              } else if (OB_UNLIKELY(((parse_tree.children_[0]->value_)>>2) != 0)) {
                 ret = OB_ERR_UNEXPECTED;
               } else if (is_full) {
                 if (is_extended) {

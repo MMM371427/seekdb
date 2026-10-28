@@ -34,9 +34,71 @@ ObUpdateResolver::~ObUpdateResolver()
 {
 }
 
+int ObUpdateResolver::rewrite_ai_retry_status(ParseNode *&node, ParseNode *target)
+{
+  int ret = OB_SUCCESS;
+  if (node == nullptr) { return ret; }
+  if (node->type_ == T_SELECT) { return ret; }
+  if (node->type_ == T_FUN_SYS && node->num_child_ == 2 && node->children_[0] != nullptr
+      && ObString(node->children_[0]->str_len_, node->children_[0]->str_value_).case_compare("ai_column_status") == 0) {
+    return ret;
+  }
+  if (node->type_ == T_COLUMN_REF && node->num_child_ == 3
+      && node->children_[0] == nullptr && node->children_[1] == nullptr
+      && node->children_[2] != nullptr && !node->children_[2]->is_input_quoted_
+      && ObString(node->children_[2]->str_len_, node->children_[2]->str_value_).case_compare("status") == 0) {
+    auto make_node = [this](ObItemType type, int64_t count) -> ParseNode * {
+      ParseNode *created = static_cast<ParseNode *>(allocator_->alloc(sizeof(ParseNode)));
+      if (created != nullptr) {
+        MEMSET(created, 0, sizeof(ParseNode));
+        created->type_ = type;
+        created->num_child_ = count;
+        if (count > 0) {
+          created->children_ = static_cast<ParseNode **>(allocator_->alloc(count * sizeof(ParseNode *)));
+          if (created->children_ == nullptr) { return nullptr; }
+          MEMSET(created->children_, 0, count * sizeof(ParseNode *));
+        }
+      }
+      return created;
+    };
+    ParseNode *function = make_node(T_FUN_SYS, 2);
+    ParseNode *name = make_node(T_IDENT, 0);
+    ParseNode *args = make_node(T_EXPR_LIST, 1);
+    if (function == nullptr || name == nullptr || args == nullptr) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      name->str_value_ = "ai_column_status";
+      name->str_len_ = 16;
+      args->children_[0] = target;
+      function->children_[0] = name;
+      function->children_[1] = args;
+      node = function;
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < node->num_child_; ++i) {
+      ret = SMART_CALL(rewrite_ai_retry_status(node->children_[i], target));
+    }
+  }
+  return ret;
+}
+
 int ObUpdateResolver::resolve(const ParseNode &parse_tree)
 {
   int ret = OB_SUCCESS;
+  // The statement value_ contains the parser parameter count.
+  const ParseNode *retry_assignments = parse_tree.num_child_ > UPDATE_LIST
+      && parse_tree.children_ != nullptr ? parse_tree.children_[UPDATE_LIST] : nullptr;
+  if (retry_assignments != nullptr && retry_assignments->num_child_ == 1
+      && retry_assignments->children_ != nullptr && retry_assignments->children_[0] != nullptr
+      && retry_assignments->children_[0]->value_ == 0x41494358) {
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "mixing RETRY AI COLUMN with another ALTER action");
+    return OB_NOT_SUPPORTED;
+  }
+  is_ai_column_retry_ = retry_assignments != nullptr
+      && retry_assignments->type_ == T_ASSIGN_LIST && retry_assignments->num_child_ == 1
+      && retry_assignments->children_ != nullptr && retry_assignments->children_[0] != nullptr
+      && retry_assignments->children_[0]->type_ == T_ASSIGN_ITEM
+      && retry_assignments->children_[0]->value_ == 0x41494352;
   ObUpdateStmt *update_stmt = NULL;
   ObSEArray<ObTableAssignment, 2> tables_assign;
   if (T_UPDATE != parse_tree.type_
@@ -55,6 +117,15 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
     if (NULL != parse_tree.children_[IGNORE]) {
       update_stmt->set_ignore(true);
       session_info_->set_ignore_stmt(true);
+    }
+  }
+
+  if (OB_SUCC(ret) && is_ai_column_retry_) {
+    ParseNode *assignments = parse_tree.children_[UPDATE_LIST];
+    if (assignments == nullptr || assignments->num_child_ != 1) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      ret = rewrite_ai_retry_status(parse_tree.children_[WHERE], assignments->children_[0]->children_[0]);
     }
   }
 
@@ -149,6 +220,9 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
     } else if (OB_FAIL(update_stmt->check_dml_source_from_join())) {
     } else if (OB_FAIL(check_safe_update_mode(update_stmt))) {
     } else { /*do nothing*/ }
+  }
+  if (OB_SUCC(ret)) {
+    ret = rewrite_ai_column_reads();
   }
   return ret;
 }

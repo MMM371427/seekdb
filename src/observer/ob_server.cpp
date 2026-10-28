@@ -29,6 +29,7 @@
 #include <thread>
 #include <cstdio>
 #include "observer/ob_server.h"
+#include "sql/engine/dml/ob_table_modify_op.h"
 #include "observer/ob_system_package_load_service.h"
 #include "rootserver/ob_ddl_service_launcher.h"
 #include "share/ob_autoincrement_service.h"
@@ -850,6 +851,10 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init redef heart beat task failed", KR(ret));
     } else if (OB_FAIL(init_refresh_cpu_frequency())) {
       LOG_ERROR("init refresh cpu frequency failed", KR(ret));
+    } else if (OB_FAIL(ai_column_timer_.init("AIColumn", ObMemAttr("AIColumn")))) {
+      LOG_ERROR("init AI column timer failed", KR(ret));
+    } else if (OB_FAIL(ai_column_task_.init(this, ai_column_timer_))) {
+      LOG_ERROR("schedule AI column worker failed", KR(ret));
     } else if (OB_FAIL(ObOptStatManager::get_instance().init(&sql_proxy_))) {
       LOG_ERROR("init opt stat manager failed", KR(ret));
     } else if (OB_FAIL(ObSysTaskStatMgr::get_instance().set_self_addr(self_addr_))) {
@@ -982,6 +987,7 @@ void ObServer::destroy()
 
     FLOG_INFO("begin to destroy ctas clean up timer");
     ctas_clean_up_timer_.destroy();
+    ai_column_timer_.destroy();
     FLOG_INFO("ctas clean up timer destroyed");
 
     FLOG_INFO("begin to destroy local management service");
@@ -1614,6 +1620,8 @@ int ObServer::stop()
     FLOG_INFO("ctas clean up timer stopped");
 
     FLOG_INFO("begin to stop inner sql proxy");
+    ai_column_timer_.stop();
+    ai_column_timer_.wait();
     sql_proxy_.stop();
     ddl_sql_proxy_.stop();
     FLOG_INFO("inner sql proxy stopped");
@@ -2684,6 +2692,23 @@ int ObServer::reload_config()
   }
 
   return ret;
+}
+
+int ObServer::AIColumnTask::init(ObServer *observer, ObTimer &timer)
+{
+  observer_ = observer;
+  disable_timeout_check();
+  return observer == nullptr ? OB_INVALID_ARGUMENT : timer.schedule(*this, 200000, true);
+}
+
+void ObServer::AIColumnTask::runTimerTask()
+{
+  if (observer_ != nullptr) {
+    const int ret = sql::AIColumnRuntime::process_pending(observer_->sql_proxy_);
+    if (ret != OB_SUCCESS && ret != OB_NOT_INIT && REACH_TIME_INTERVAL(60000000)) {
+      LOG_WARN("AI column worker iteration failed", K(ret));
+    }
+  }
 }
 
 ObServer::ObCTASCleanUpTask::ObCTASCleanUpTask()

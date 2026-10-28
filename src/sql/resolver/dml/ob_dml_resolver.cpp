@@ -17,6 +17,9 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "config_bridge.h"
 #include "ob_dml_resolver.h"
+#include "sql/engine/dml/ob_table_modify_op.h"
+#include <functional>
+#include "sql/resolver/dml/ob_stmt_expr_visitor.h"
 #include "sql/resolver/dml/ob_view_table_resolver.h"
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "sql/resolver/dml/ob_default_value_utils.h"
@@ -948,6 +951,198 @@ int ObDMLResolver::get_target_column_list(ObSEArray<ColumnItem, 4> &target_list,
   return ret;
 }
 
+int ObDMLResolver::rewrite_ai_column_reads()
+{
+  int ret = OB_SUCCESS;
+  ObObj mode;
+  if (params_.is_from_create_view_) {
+    // Store the view definition independently of the creating session's mode.
+  } else if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_AI_COLUMN_STRICT_READ, mode))) {
+  } else if (mode.get_int() != 0) {
+    class ReadVisitor : public ObStmtExprVisitor {
+    public:
+      explicit ReadVisitor(std::function<int(ObRawExpr *&)> rewrite) : rewrite_(rewrite)
+      {
+        remove_all();
+        add_scope(SCOPE_WHERE);
+        add_scope(SCOPE_GROUPBY);
+        add_scope(SCOPE_HAVING);
+        add_scope(SCOPE_SELECT);
+        add_scope(SCOPE_ORDERBY);
+        add_scope(SCOPE_JOINED_TABLE);
+        add_scope(SCOPE_SEMI_INFO);
+        add_scope(SCOPE_QUALIFY_FILTER);
+      }
+      int do_visit(ObRawExpr *&expr) override { return rewrite_(expr); }
+    private:
+      std::function<int(ObRawExpr *&)> rewrite_;
+    } visitor([this](ObRawExpr *&expr) { return rewrite_ai_column_read(expr); });
+    // OFF plans retain ordinary column expressions for native ANN matching.
+    // INFLUENCE_PLAN makes a session mode change invalidate cached plans.
+    if (OB_FAIL(get_stmt()->iterate_stmt_expr(visitor))) {
+    } else {
+      ret = get_stmt()->formalize_stmt(session_info_);
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::build_ai_column_wide_state(const TableItem &table,
+    const ObColumnSchemaV2 &column, ObRawExpr *&state)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  auto identifier = [&sql](const ObString &name) -> int {
+    int rc = sql.append("`");
+    for (int64_t i = 0; rc == OB_SUCCESS && i < name.length(); ++i) {
+      if (name.ptr()[i] == '`') { rc = sql.append("``"); }
+      else { rc = sql.append(name.ptr() + i, 1); }
+    }
+    if (rc == OB_SUCCESS) { rc = sql.append("`"); }
+    return rc;
+  };
+  // Resolve an uncorrelated scalar aggregate in the same native statement and
+  // snapshot. STATUS inspects hidden state without recursively guarding results.
+  if (OB_FAIL(sql.append("SELECT CASE WHEN COUNT(*)=0 THEN 2 ELSE 0 END FROM "))) {
+  } else if (OB_FAIL(identifier(table.database_name_))) {
+  } else if (OB_FAIL(sql.append("."))) {
+  } else if (OB_FAIL(identifier(table.table_name_))) {
+  } else if (OB_FAIL(sql.append(" WHERE AI_COLUMN_STATUS("))) {
+  } else if (OB_FAIL(identifier(column.get_column_name_str()))) {
+  } else if (OB_FAIL(sql.append(") <> 'READY'"))) {
+  } else {
+    ObParser parser(*allocator_, session_info_->get_sql_mode(), session_info_->get_charsets4parser());
+    ParseResult parsed;
+    if (OB_FAIL(parser.parse(sql.string(), parsed))) {
+      LOG_WARN("AI column strict-read subquery parsing failed", K(ret), K(sql));
+    } else if (parsed.result_tree_ == nullptr || parsed.result_tree_->num_child_ != 1) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(resolve_sql_expr(*parsed.result_tree_->children_[0], state))) {
+      // Use the normal expression/subquery entry point. SELECT's override
+      // installs subquery scope, CTE context and execution-parameter ownership.
+      LOG_WARN("AI column strict-read subquery resolution failed", K(ret), K(sql));
+    } else if (state == nullptr) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(state->formalize(session_info_))) {
+      LOG_WARN("AI column strict-read subquery formalization failed", K(ret), K(sql));
+    }
+    parser.free_result(parsed);
+  }
+  return ret;
+}
+
+int ObDMLResolver::rewrite_ai_column_read(ObRawExpr *&expr)
+{
+  int ret = OB_SUCCESS;
+  if (expr == nullptr) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (expr->get_expr_type() == T_FUN_SYS_AI_COLUMN_READ
+      || expr->get_expr_type() == T_FUN_SYS_AI_COLUMN_STATUS) {
+    // Neither the original result inside a guard nor a status query is a read.
+  } else if (expr->is_column_ref_expr()) {
+    const ObColumnRefRawExpr &ref = *static_cast<ObColumnRefRawExpr *>(expr);
+    const TableItem *table = get_stmt()->get_table_item_by_id(ref.get_table_id());
+    const ObTableSchema *schema = nullptr;
+    const ObColumnSchemaV2 *column = nullptr;
+    if (table == nullptr || !table->is_basic_table()) {
+      // Derived queries are guarded in their own SELECT resolver.
+    } else if (OB_FAIL(schema_checker_->get_table_schema(table->ref_id_, schema))) {
+    } else if (schema == nullptr) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if ((column = schema->get_column_schema(ref.get_column_id())) != nullptr
+        && column->is_ai_column()) {
+      ObSqlString state_name;
+      ColumnItem *state = nullptr;
+      ObSysFunRawExpr *guard = nullptr;
+      ObRawExpr *wide_state = nullptr;
+      ObRawExpr *present = nullptr;
+      ObRawExpr *missing = nullptr;
+      ObRawExpr *checked_state = nullptr;
+      ObConstRawExpr *table_id = nullptr;
+      ObConstRawExpr *column_id = nullptr;
+      if (OB_FAIL(state_name.append_fmt("__ai_state_%lu", column->get_column_id()))) {
+      } else if (OB_FAIL(resolve_basic_column_item(*table, state_name.string(), true, state))) {
+      } else if (state == nullptr || state->expr_ == nullptr) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(build_ai_column_wide_state(*table, *column, wide_state))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_is_not_null_expr(*params_.expr_factory_,
+                     state->expr_, true, present))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_null_expr(*params_.expr_factory_, missing))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_case_when_expr(*params_.expr_factory_,
+                     present, wide_state, missing, checked_state))) {
+      } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_SYS_AI_COLUMN_READ, guard))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_const_uint_expr(*params_.expr_factory_,
+                     ObUInt64Type, table->ref_id_, table_id))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_const_uint_expr(*params_.expr_factory_,
+                     ObUInt64Type, column->get_column_id(), column_id))) {
+      } else if (OB_FAIL(guard->init_param_exprs(4))) {
+      } else if (OB_FAIL(guard->add_param_expr(expr))) {
+      } else if (OB_FAIL(guard->add_param_expr(checked_state))) {
+      } else if (OB_FAIL(guard->add_param_expr(table_id))) {
+      } else if (OB_FAIL(guard->add_param_expr(column_id))) {
+      } else if (OB_FAIL(guard->formalize(session_info_))) {
+      } else {
+        expr = guard;
+      }
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
+      ret = SMART_CALL(rewrite_ai_column_read(expr->get_param_expr(i)));
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::resolve_ai_column_status(ObRawExpr *expr)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (expr->get_expr_type() == T_FUN_SYS_AI_COLUMN_STATUS) {
+    const ObRawExpr *argument = expr->get_param_count() == 1
+        ? expr->get_param_expr(0) : nullptr;
+    const TableItem *table = nullptr;
+    const ObTableSchema *schema = nullptr;
+    const ObColumnSchemaV2 *column = nullptr;
+    if (argument == nullptr || !argument->is_column_ref_expr()) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "AI_COLUMN_STATUS requires an AI column");
+    } else {
+      const ObColumnRefRawExpr &ref = *static_cast<const ObColumnRefRawExpr *>(argument);
+      table = get_stmt()->get_table_item_by_id(ref.get_table_id());
+      if (table == nullptr || !table->is_basic_table()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI_COLUMN_STATUS on a derived table");
+      } else if (OB_FAIL(schema_checker_->get_table_schema(table->ref_id_, schema))) {
+      } else if (schema == nullptr
+          || (column = schema->get_column_schema(ref.get_column_id())) == nullptr) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (column->is_hidden()
+          && column->get_column_name_str().prefix_match("__ai_state_")) {
+        // A shared expression may already have been bound by this resolver.
+      } else if (!column->is_ai_column()) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "AI_COLUMN_STATUS requires an AI column");
+      } else {
+        ObSqlString state_name;
+        ColumnItem *state = nullptr;
+        if (OB_FAIL(state_name.append_fmt("__ai_state_%lu", column->get_column_id()))) {
+        } else if (OB_FAIL(resolve_basic_column_item(*table, state_name.string(), true, state))) {
+        } else if (state == nullptr || state->expr_ == nullptr) {
+          ret = OB_ERR_UNEXPECTED;
+        } else {
+          expr->get_param_expr(0) = state->expr_;
+        }
+      }
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
+      ret = SMART_CALL(resolve_ai_column_status(expr->get_param_expr(i)));
+    }
+  }
+  return ret;
+}
+
 int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
     ObArray<ObQualifiedName> *output_columns/* = NULL*/)
 {
@@ -1066,6 +1261,9 @@ int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
     if (OB_SUCC(ret) && udf_info.count() > 0) {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("UDFInfo should not found be here!!!", K(ret));
+    }
+    if (OB_SUCC(ret)) {
+      ret = resolve_ai_column_status(expr);
     }
     //try to convert ObUDFRawExpr to ObAggRawExpr for pl agg udf
     if (OB_SUCC(ret)) {
@@ -1833,6 +2031,7 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
                                              ObDMLStmt *stmt /* = NULL */)
 {
   int ret = OB_SUCCESS;
+  include_hidden = include_hidden || AIColumnRuntime::is_internal_write();
   ObColumnRefRawExpr *col_expr = NULL;
   ObSchemaGetterGuard *schema_guard = NULL;
   ColumnItem column_item;

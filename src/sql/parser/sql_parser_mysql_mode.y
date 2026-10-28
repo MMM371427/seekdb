@@ -333,7 +333,7 @@ END_P SET_VAR DELIMITER
         QUANTIFIER_TABLE QUARTER QUERY QUEUE_TIME QUICK
 
         RECOVER REDUNDANT REFRESH RELAY RELAYLOG RELAY_LOG_FILE RELAY_LOG_POS RELAY_THREAD RELOAD REMOVE
-        REPEATABLE RESET RESPECT RESTART RESTORE RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE
+        REPEATABLE RESET RESPECT RESTART RESTORE RETRY RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE
         REWRITE ROLLBACK ROLLUP ROUTINE ROW ROWID ROW_COUNT ROW_FORMAT ROWS RTREE
         RUN RECYCLEBIN REPLICATION ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS
         RANK READ_ONLY RECOVERY REJECT ROLE
@@ -394,6 +394,7 @@ END_P SET_VAR DELIMITER
 %type <node> update_asgn_list update_asgn_factor
 %type <node> update_basic_stmt delete_basic_stmt
 %type <node> table_element_list table_element column_definition column_definition_ref column_definition_list column_name_list
+%type <node> opt_ai_column_options ai_column_option_list ai_column_option ai_column_expression ai_column_arguments ai_column_argument
 %type <node> opt_generated_keyname opt_generated_option_list opt_generated_column_attribute_list generated_column_attribute opt_storage_type
 %type <node> data_type special_table_type opt_if_not_exists opt_if_exists opt_charset collation opt_collation cast_data_type
 %type <node> replace_with_opt_hint insert_with_opt_hint column_list opt_on_duplicate_key_clause opt_into opt_replace opt_temporary no_param_column_ref
@@ -4849,6 +4850,17 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
   merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, $10);
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 7, $1, $2, attributes, $7, $9, $12, $4);
 }
+| column_definition_ref data_type opt_column_attribute_list AI COLUMN '(' ai_column_expression ')' opt_ai_column_options opt_position_column
+{
+  ParseNode *attributes = NULL;
+  ParseNode *ai_column = NULL;
+  merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, $3);
+  set_data_type_collation($2, attributes, false, true);
+  dup_expr_string($7, result, @7.first_column, @7.last_column);
+  malloc_non_terminal_node(ai_column, result->malloc_pool_, T_AI_COLUMN, 2, $7, $9);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 5,
+                          $1, $2, attributes, $10, ai_column);
+}
 | column_definition_ref SERIAL opt_column_attribute_list opt_position_column 
 {
   ParseNode *unsigned_bigint_type = NULL;
@@ -4875,6 +4887,56 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
   merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, attributes);
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 4, $1, unsigned_bigint_type, attributes, $4);
 }
+;
+
+/* Preserve argument source spans without replacing decoded literal values.
+ * The resolver uses these native parser spans to add result-type instructions. */
+ai_column_expression:
+relation_name '(' ai_column_arguments ')'
+{
+  ParseNode *arguments = NULL;
+  merge_nodes(arguments, result, T_EXPR_LIST, $3);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_SYS, 2, $1, arguments);
+  $$->stmt_loc_.first_column_ = @1.first_column;
+  $$->stmt_loc_.last_column_ = @4.last_column;
+}
+;
+
+ai_column_arguments:
+ai_column_argument
+{ $$ = $1; }
+| ai_column_arguments ',' ai_column_argument
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3); }
+;
+
+ai_column_argument:
+expr
+{
+  $$ = $1;
+  $$->stmt_loc_.first_column_ = @1.first_column;
+  $$->stmt_loc_.last_column_ = @1.last_column;
+}
+;
+
+/* AI column options deliberately use identifiers, so sync_mode and max_retries
+ * remain legal ordinary column names. Semantic validation belongs to the resolver. */
+opt_ai_column_options:
+/* EMPTY */
+{ $$ = NULL; }
+| WITH '(' ai_column_option_list ')'
+{ merge_nodes($$, result, T_EXPR_LIST, $3); }
+;
+
+ai_column_option_list:
+ai_column_option
+{ $$ = $1; }
+| ai_column_option_list ',' ai_column_option
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3); }
+;
+
+ai_column_option:
+column_name COMP_EQ expr
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, $1, $3); }
 ;
 
 constraint_definition:
@@ -12646,6 +12708,15 @@ SHOW opt_extended_or_full TABLES opt_from_or_in_database_clause opt_show_conditi
   $$->value_ = $2[0];
   malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, $$, $5, $6, $7);
 }
+| SHOW AI columns_or_fields from_or_in relation_factor opt_from_or_in_database_clause opt_show_condition
+{
+  (void)$3;
+  (void)$4;
+  ParseNode *flags = NULL;
+  malloc_terminal_node(flags, result->malloc_pool_, T_INT);
+  flags->value_ = 4;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, flags, $5, $6, $7);
+}
 | SHOW TABLE STATUS opt_from_or_in_database_clause opt_show_condition
 { malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_TABLE_STATUS, 2, $4, $5); }
 | SHOW PROCEDURE STATUS opt_from_or_in_database_clause opt_show_condition
@@ -14660,6 +14731,46 @@ alter_with_opt_hint TABLE relation_factor alter_table_actions
   malloc_non_terminal_node($$, result->malloc_pool_, T_ALTER_TABLE, 4, $3, table_actions, NULL, $1);
   $$->value_ = 0;
 }
+| alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_name opt_where
+{
+  ParseNode *table = NULL;
+  ParseNode *tables = NULL;
+  ParseNode *column = NULL;
+  ParseNode *assignment = NULL;
+  ParseNode *assignments = NULL;
+  malloc_non_terminal_node(table, result->malloc_pool_, T_ORG, 4, $3, NULL, NULL, NULL);
+  malloc_non_terminal_node(tables, result->malloc_pool_, T_TABLE_REFERENCES, 1, table);
+  malloc_non_terminal_node(column, result->malloc_pool_, T_COLUMN_REF, 3, NULL, NULL, $7);
+  malloc_non_terminal_node(assignment, result->malloc_pool_, T_ASSIGN_ITEM, 2, column, column);
+  malloc_non_terminal_node(assignments, result->malloc_pool_, T_ASSIGN_LIST, 1, assignment);
+  /* Statement value_ is reserved for parameter count; keep the retry marker
+     on the assignment so check_question_mark cannot overwrite it. */
+  assignment->value_ = 0x41494352;
+  /* Lower to native transactional UPDATE; the resolver replaces the assignment. */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_UPDATE, 11,
+      NULL, tables, assignments, $8, NULL, NULL, NULL, $1, NULL, NULL, NULL);
+}
+| alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_name opt_where ',' alter_table_actions
+{
+  (void)$10;
+  ParseNode *table = NULL;
+  ParseNode *tables = NULL;
+  ParseNode *column = NULL;
+  ParseNode *assignment = NULL;
+  ParseNode *assignments = NULL;
+  malloc_non_terminal_node(table, result->malloc_pool_, T_ORG, 4, $3, NULL, NULL, NULL);
+  malloc_non_terminal_node(tables, result->malloc_pool_, T_TABLE_REFERENCES, 1, table);
+  malloc_non_terminal_node(column, result->malloc_pool_, T_COLUMN_REF, 3, NULL, NULL, $7);
+  malloc_non_terminal_node(assignment, result->malloc_pool_, T_ASSIGN_ITEM, 2, column, column);
+  malloc_non_terminal_node(assignments, result->malloc_pool_, T_ASSIGN_LIST, 1, assignment);
+  /* Statement value_ is reserved for parameter count; keep the retry marker
+     on the assignment so check_question_mark cannot overwrite it. */
+  assignment->value_ = 0x41494358;
+  /* Lower to native transactional UPDATE; the resolver replaces the assignment. */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_UPDATE, 11,
+      NULL, tables, assignments, $8, NULL, NULL, NULL, $1, NULL, NULL, NULL);
+}
+
 ;
 
 
@@ -17958,6 +18069,7 @@ ACCOUNT
 |       RESPECT
 |       RESTART
 |       RESTORE
+|       RETRY
 |       RESUME
 |       RETURNED_SQLSTATE
 |       RETURNING

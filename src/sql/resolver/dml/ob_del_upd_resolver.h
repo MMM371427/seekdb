@@ -56,6 +56,8 @@ public:
   inline bool is_resolve_insert_update() { return is_resolve_insert_update_;}
 protected:
 
+  int resolve_ai_retry_assignments(common::ObIArray<ObTableAssignment> &tables);
+  int resolve_ai_assignments(common::ObIArray<ObTableAssignment> &tables);
   int resolve_assignments(const ParseNode &parse_node,
                           common::ObIArray<ObTableAssignment> &table_assigns,
                           ObStmtScope scope);
@@ -240,6 +242,7 @@ private:
   bool is_column_specify_;
 protected:
   bool is_resolve_insert_update_;
+  bool is_ai_column_retry_;
 };
 
 } /* namespace sql */

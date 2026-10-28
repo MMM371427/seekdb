@@ -267,6 +267,16 @@ public:
 
 public:
   //Refer to ObPurgeCompletedMonitorInfoTask
+  class AIColumnTask : public common::ObTimerTask
+  {
+  public:
+    AIColumnTask() : observer_(nullptr) {}
+    int init(ObServer *observer, common::ObTimer &timer);
+    void runTimerTask() override;
+  private:
+    ObServer *observer_;
+  };
+
   class ObCTASCleanUpTask: public common::ObTimerTask
   {
   public:
@@ -483,6 +493,8 @@ private:
   common::ObTimer server_gtimer_;
   common::ObTimer sql_mem_timer_;
   common::ObTimer ctas_clean_up_timer_;
+  common::ObTimer ai_column_timer_;
+  AIColumnTask ai_column_task_;
   ObServerDutyTask duty_task_;
   ObSqlMemoryTimerTask sql_mem_task_;
   ObCTASCleanUpTask ctas_clean_up_task_;     // repeat & no retry

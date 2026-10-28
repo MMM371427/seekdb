@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_expr_ai_complete.h"
+#include "sql/session/ob_sql_session_info.h"
 #include "query/ai/ob_ai_endpoint_resolver.h"
 #include "share/rc/ob_server_runtime.h"
 
@@ -133,7 +134,18 @@ int ObExprAIComplete::eval_ai_complete(const ObExpr &expr,
     }
 
     if (OB_FAIL(ret)) {
-    } else if (OB_NOT_NULL(arg_config)) {
+    } else if (OB_NOT_NULL(arg_config) && !arg_config->is_null()
+        && expr.args_[CONFIG_IDX]->datum_meta_.type_ == ObJsonType) {
+      ObIJsonBase *json_config = nullptr;
+      bool is_null = false;
+      if (OB_FAIL(ObJsonExprHelper::get_json_doc(expr, ctx, temp_allocator,
+                      CONFIG_IDX, json_config, is_null))) {
+      } else if (!is_null && json_config->json_type() != ObJsonNodeType::J_OBJECT) {
+        ret = OB_INVALID_ARGUMENT;
+      } else if (!is_null) {
+        config = static_cast<ObJsonObject *>(json_config);
+      }
+    } else if (OB_NOT_NULL(arg_config) && !arg_config->is_null()) {
       if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator, *arg_config, expr.args_[2]->datum_meta_, expr.args_[2]->obj_meta_.has_lob_header(), config_str))) {
       } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_object_form_str(temp_allocator, config_str, config))) {
       }
@@ -198,6 +210,112 @@ int ObExprAIComplete::cg_expr(ObExprCGCtx &expr_cg_ctx,
 
   if (OB_SUCC(ret)) {
     rt_expr.eval_func_ = ObExprAIComplete::eval_ai_complete;
+  }
+  return ret;
+}
+
+AIColumnStatus::AIColumnStatus(common::ObIAllocator &alloc)
+    : ObFuncExprOperator(alloc, T_FUN_SYS_AI_COLUMN_STATUS, "ai_column_status",
+                         1, NOT_VALID_FOR_GENERATED_COL, NOT_ROW_DIMENSION)
+{
+}
+
+int AIColumnStatus::calc_result_type1(ObExprResType &type, ObExprResType &arg,
+                                     common::ObExprTypeCtx &type_ctx) const
+{
+  UNUSED(type_ctx);
+  arg.set_calc_type(ObIntType);
+  type.set_varchar();
+  type.set_length(7);
+  type.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+  type.set_collation_level(CS_LEVEL_IMPLICIT);
+  return OB_SUCCESS;
+}
+
+int AIColumnStatus::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
+                            ObExpr &rt_expr) const
+{
+  UNUSED(expr_cg_ctx);
+  UNUSED(raw_expr);
+  rt_expr.eval_func_ = eval_status;
+  return OB_SUCCESS;
+}
+
+int AIColumnStatus::eval_status(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
+{
+  int ret = OB_SUCCESS;
+  ObDatum *state = nullptr;
+  static const char *names[] = {"PENDING", "RUNNING", "READY", "RETRY", "FAILED"};
+  if (OB_FAIL(expr.args_[0]->eval(ctx, state))) {
+  } else if (state->is_null()) {
+    // Preserve the NULL row produced by an outer join.
+    res.set_null();
+  } else if (state->get_int() < 0 || state->get_int() >= 5) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    res.set_string(ObString::make_string(names[state->get_int()]));
+  }
+  return ret;
+}
+
+AIColumnRead::AIColumnRead(common::ObIAllocator &alloc)
+    : ObFuncExprOperator(alloc, T_FUN_SYS_AI_COLUMN_READ, "__ai_column_read",
+                         4, NOT_VALID_FOR_GENERATED_COL, NOT_ROW_DIMENSION, true)
+{
+  disable_operand_auto_cast();
+}
+
+int AIColumnRead::calc_result_typeN(ObExprResType &type, ObExprResType *args,
+                                   int64_t count, common::ObExprTypeCtx &type_ctx) const
+{
+  UNUSED(type_ctx);
+  int ret = OB_SUCCESS;
+  if (count != 4) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    // Preserve JSON, string collation and VECTOR subschema metadata exactly.
+    type = args[0];
+  }
+  return ret;
+}
+
+int AIColumnRead::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
+                          ObExpr &rt_expr) const
+{
+  UNUSED(expr_cg_ctx);
+  UNUSED(raw_expr);
+  rt_expr.eval_func_ = eval_read;
+  return OB_SUCCESS;
+}
+
+int AIColumnRead::eval_read(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
+{
+  int ret = OB_SUCCESS;
+  ObObj mode;
+  ObDatum *state = nullptr;
+  ObDatum *value = nullptr;
+  ObDatum *table_id = nullptr;
+  ObDatum *column_id = nullptr;
+  ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+  if (session == nullptr) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(session->get_sys_variable(share::SYS_VAR_AI_COLUMN_STRICT_READ, mode))) {
+  } else if (mode.get_int() != 0) {
+    if (OB_FAIL(expr.args_[1]->eval(ctx, state))) {
+    } else if (!state->is_null() && state->get_int() != 2) {
+      if (OB_FAIL(expr.args_[2]->eval(ctx, table_id))) {
+      } else if (OB_FAIL(expr.args_[3]->eval(ctx, column_id))) {
+      } else {
+        ret = OB_AI_COLUMN_UNFINISHED;
+        LOG_USER_ERROR(OB_AI_COLUMN_UNFINISHED, table_id->get_uint(), column_id->get_uint());
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(expr.args_[0]->eval(ctx, value))) {
+    } else {
+      res = *value;
+    }
   }
   return ret;
 }

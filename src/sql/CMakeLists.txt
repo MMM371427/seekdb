@@ -14,6 +14,13 @@ if(ARCHITECTURE STREQUAL "x86_64" OR ARCHITECTURE STREQUAL "amd64")
     -mtune=core-avx2 -mavx2 -mfma -mbmi2 -mavx512vl -mavx512bw)
 endif()
 
+# Parser generation runs at configure time. Track its inputs so incremental
+# builds reconfigure before compiling consumers of the generated token header.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${PROJECT_SOURCE_DIR}/src/sql/parser/sql_parser_mysql_mode.y"
+  "${PROJECT_SOURCE_DIR}/src/sql/parser/sql_parser_mysql_mode.l"
+  "${PROJECT_SOURCE_DIR}/src/query/api/query/parser/ob_item_type.h")
+
 if(WIN32)
   find_program(PWSH_EXE NAMES pwsh pwsh.exe powershell powershell.exe REQUIRED)
   execute_process(
