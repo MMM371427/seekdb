@@ -112,6 +112,15 @@ int AIColumnRuntime::after_row(ObTableModifyOp &op, const ObDMLBaseCtDef &def,
   else if (OB_FAIL(op.open_inner_conn())) {}
   else if (OB_FAIL(op.begin_nested_session(true))) {}
   else {
+    // The inner connection shares the caller's session and transaction. Mark
+    // its parent so transaction control uses nested statement bookkeeping.
+    struct NestedStatementGuard {
+      explicit NestedStatementGuard(ObDASCtx &ctx)
+          : ctx_(ctx), previous_(ctx.is_ai_column_enqueue_) { ctx_.is_ai_column_enqueue_ = true; }
+      ~NestedStatementGuard() { ctx_.is_ai_column_enqueue_ = previous_; }
+      ObDASCtx &ctx_;
+      bool previous_;
+    } nested_guard(op.get_exec_ctx().get_das_ctx());
     WriteGuard guard;
     if (!inserting && (deleting || old_key.string() != new_key.string())) {
       ObSqlString sql;
