@@ -74,7 +74,7 @@ ObDelUpdResolver::~ObDelUpdResolver()
 int ObDelUpdResolver::resolve_ai_assignments(ObIArray<ObTableAssignment> &tables)
 {
   int ret = OB_SUCCESS;
-  if (AIColumnRuntime::is_worker_write()) { return ret; }
+  if (AIColumnRuntime::is_internal_write()) { return ret; }
   for (int64_t t = 0; OB_SUCC(ret) && t < tables.count(); ++t) {
     ObTableAssignment &assigns = tables.at(t);
     const TableItem *table = get_stmt()->get_table_item_by_id(assigns.table_id_);

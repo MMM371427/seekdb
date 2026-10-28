@@ -40,6 +40,14 @@ class AIColumnRuntime
 public:
   static int process_pending(common::ObMySQLProxy &proxy);
   static bool is_worker_write() { return worker_write_; }
+  static bool is_internal_write() { return worker_write_ || internal_write_; }
+  class EnqueueGuard {
+  public:
+    EnqueueGuard() : previous_(internal_write_) { internal_write_ = true; }
+    ~EnqueueGuard() { internal_write_ = previous_; }
+  private:
+    bool previous_;
+  };
   class WriteGuard {
   public:
     WriteGuard() : previous_(worker_write_) { worker_write_ = true; }
@@ -51,6 +59,7 @@ public:
                        ObDmlEventType event);
 private:
   static thread_local bool worker_write_;
+  static thread_local bool internal_write_;
 };
 
 class ForeignKeyHandle

@@ -1977,7 +1977,7 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
                                              ObDMLStmt *stmt /* = NULL */)
 {
   int ret = OB_SUCCESS;
-  include_hidden = include_hidden || AIColumnRuntime::is_worker_write();
+  include_hidden = include_hidden || AIColumnRuntime::is_internal_write();
   ObColumnRefRawExpr *col_expr = NULL;
   ObSchemaGetterGuard *schema_guard = NULL;
   ColumnItem column_item;

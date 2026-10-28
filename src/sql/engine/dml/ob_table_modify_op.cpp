@@ -38,6 +38,7 @@ using namespace observer;
 namespace sql
 {
 thread_local bool AIColumnRuntime::worker_write_ = false;
+thread_local bool AIColumnRuntime::internal_write_ = false;
 namespace {
 int ai_hex(ObSqlString &sql, const ObString &value)
 {
@@ -291,9 +292,68 @@ int ai_publish(ObMySQLProxy &proxy,const std::vector<AIWork> &work,bool failed)
 }
 } // namespace
 
+namespace {
+// ALTER ADD uses a NULL original request default for existing rows. Renew
+// those requests through native UPDATE so row changes and task insertion use
+// the same transaction and the same after-row hook as foreground writes.
+int ai_backfill(ObMySQLProxy &proxy)
+{
+  int ret = OB_SUCCESS;
+  std::vector<AIWork> columns;
+  {
+    ObMySQLProxy::MySQLResult result;
+    const char *sql = "SELECT /*+ LEADING(c t d) USE_NL(t d) */ c.table_id,c.column_id,t.table_name,d.database_name FROM oceanbase.__all_column c JOIN oceanbase.__all_table t ON t.table_id=c.table_id JOIN oceanbase.__all_database d ON d.database_id=t.database_id WHERE c.ai_column_expr IS NOT NULL AND c.ai_column_expr<>'' ORDER BY c.table_id,c.column_id";
+    if (OB_FAIL(proxy.read(result, sql))) { return ret; }
+    ObMySQLResult &r = *result.get_result();
+    while (OB_SUCCESS == (ret = r.next())) {
+      AIWork w;
+      if (OB_FAIL(r.get_int("table_id", w.tid))) {}
+      else if (OB_FAIL(r.get_int("column_id", w.cid))) {}
+      else if (OB_FAIL(ai_read_text(r,"table_name",w.table))) {}
+      else if (OB_FAIL(ai_read_text(r,"database_name",w.database))) {}
+      if (OB_FAIL(ret)) { return ret; }
+      columns.push_back(w);
+    }
+    if (ret == OB_ITER_END) { ret = OB_SUCCESS; }
+  }
+  AIColumnRuntime::EnqueueGuard guard;
+  for (size_t begin = 0; OB_SUCC(ret) && begin < columns.size();) {
+    size_t end = begin + 1;
+    while (end < columns.size() && columns[end].tid == columns[begin].tid) { ++end; }
+    ObSqlString sql;
+    if (OB_FAIL(sql.append("UPDATE /*+ QUERY_TIMEOUT(1000000) */ "))) {}
+    else if (OB_FAIL(ai_table_name(sql,columns[begin]))) {}
+    else { ret = sql.append(" SET "); }
+    for (size_t c = begin; OB_SUCC(ret) && c < end; ++c) {
+      if (c > begin) { ret = sql.append(","); }
+      if (OB_SUCC(ret)) {
+        ret = sql.append_fmt("`__ai_request_%ld`=CASE WHEN `__ai_request_%ld` IS NULL THEN UUID() ELSE `__ai_request_%ld` END",
+                            columns[c].cid,columns[c].cid,columns[c].cid);
+      }
+    }
+    if (OB_SUCC(ret)) { ret = sql.append(" WHERE "); }
+    for (size_t c = begin; OB_SUCC(ret) && c < end; ++c) {
+      if (c > begin) { ret = sql.append(" OR "); }
+      if (OB_SUCC(ret)) { ret = sql.append_fmt("`__ai_request_%ld` IS NULL", columns[c].cid); }
+    }
+    if (OB_SUCC(ret)) { ret = sql.append(" LIMIT 32"); }
+    int64_t affected = 0;
+    if (OB_SUCC(ret)) { ret = proxy.write(sql.ptr(), affected); }
+    begin = end;
+  }
+  return ret;
+}
+} // namespace
+
 int AIColumnRuntime::process_pending(ObMySQLProxy &proxy)
 {
   int ret=OB_SUCCESS;
+  if (REACH_TIME_INTERVAL(1000000)) {
+    const int backfill_ret = ai_backfill(proxy);
+    if (backfill_ret != OB_SUCCESS && REACH_TIME_INTERVAL(60000000)) {
+      LOG_WARN("AI column backfill iteration failed", K(backfill_ret));
+    }
+  }
   WriteGuard guard;
   std::string group;
   {

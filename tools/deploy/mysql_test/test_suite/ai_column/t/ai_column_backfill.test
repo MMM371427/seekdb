@@ -1,0 +1,52 @@
+# Existing rows must be scheduled after native ALTER ADD AI COLUMN.
+connection default;
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19122
+--disable_warnings
+drop database if exists ai_column_backfill;
+--enable_warnings
+create database ai_column_backfill;
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('backfill_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('backfill_model');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('backfill_model',
+  '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('backfill_ep',
+  '{"ai_model_name":"backfill_model","url":"http://127.0.0.1:19122/v1/chat/completions","access_key":"backfill-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_backfill.docs(id bigint primary key, content varchar(100));
+insert into ai_column_backfill.docs values(1,'before-alter-one'),(2,'before-alter-two');
+alter table ai_column_backfill.docs
+  add tags json AI COLUMN (AI_COMPLETE('backfill_model', concat('Classify: ',content))),
+  add score bigint AI COLUMN (AI_COMPLETE('backfill_model', concat('Score: ',content)));
+let $retry = 150;
+let $ready = 0;
+while ($retry)
+{
+  let $ready = `select count(*)=2 from ai_column_backfill.docs
+    where score=7 and json_unquote(json_extract(tags,'$.input'))=concat('Classify: ',content)`;
+  if ($ready == 1) { let $retry = 0; }
+  if ($ready == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+eval select $ready=1 as existing_rows_backfilled;
+select count(*)=0 as backfill_tasks_drained
+from oceanbase.__all_ai_column_task q join oceanbase.__all_table t on t.table_id=q.table_id
+join oceanbase.__all_database d on d.database_id=t.database_id
+where d.database_name='ai_column_backfill';
+insert into ai_column_backfill.docs(id,content) values(3,'after-alter');
+let $retry = 150;
+let $ready = 0;
+while ($retry)
+{
+  let $ready = `select count(*)=3 from ai_column_backfill.docs
+    where score=7 and json_unquote(json_extract(tags,'$.input'))=concat('Classify: ',content)`;
+  if ($ready == 1) { let $retry = 0; }
+  if ($ready == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+eval select $ready=1 as post_alter_insert_ready;
+select count(*)=3 as backfill_preserves_source_rows from ai_column_backfill.docs;
+drop database ai_column_backfill;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('backfill_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('backfill_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19122

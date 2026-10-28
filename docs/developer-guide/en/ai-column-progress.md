@@ -128,3 +128,17 @@ This covers grouped visibility/publication, retry state and completion,
 terminal NULL/task cleanup, and latest-request/stale-result guards.
 T1 and vector-index results still need the same strict result verification.
 The result checker now includes the vector suite's 12 boolean assertions.
+
+## T1/vector verification and ALTER backfill checkpoint
+
+The user reported all 23 T1 and 12 vector-index boolean assertions passing in
+`/home/magic/seekdb-ai-column-run-VKo78h`. Together with the worker checks,
+47 named boolean assertions have passed on the tested implementation.
+
+Added batched historical-row discovery for ALTER ADD: NULL original request
+tokens are renewed with native UPDATE, retaining foreground transactional
+enqueue while allowing internal hidden-column access. An ALTER backfill case
+checks two preexisting rows, two added AI columns, drained tasks and a later
+INSERT. Bash/Python/diff checks pass; new C++ build and runtime test pending.
+Manual RETRY, column-wide strict-read semantics, SHOW AI COLUMNS and other
+previously documented limitations remain incomplete.
