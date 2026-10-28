@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_table_modify_op.h"
+#include "share/schema/ob_schema_getter_guard.h"
 #include "share/ob_autoincrement_service.h"
 #include "query/session/ob_inner_sql_connection_access.h"
 #include "sql/engine/ob_physical_plan.h"
@@ -32,6 +33,134 @@ using namespace share::schema;
 using namespace observer;
 namespace sql
 {
+thread_local bool AIColumnRuntime::worker_write_ = false;
+namespace {
+int ai_hex(ObSqlString &sql, const ObString &value)
+{
+  int ret = sql.append("X'");
+  for (int64_t i = 0; OB_SUCC(ret) && i < value.length(); ++i) {
+    ret = sql.append_fmt("%02x", static_cast<unsigned char>(value.ptr()[i]));
+  }
+  if (OB_SUCC(ret)) { ret = sql.append("'"); }
+  return ret;
+}
+int ai_identifier(ObSqlString &sql, const ObString &name)
+{
+  int ret = sql.append("`");
+  for (int64_t i = 0; OB_SUCC(ret) && i < name.length(); ++i) {
+    if (name.ptr()[i] == '`') { ret = sql.append("`"); }
+    if (OB_SUCC(ret)) { ret = sql.append(name.ptr() + i, 1); }
+  }
+  if (OB_SUCC(ret)) { ret = sql.append("`"); }
+  return ret;
+}
+int ai_value(ObTableModifyOp &op, const ObDMLBaseCtDef &def,
+             const ObExprPtrIArray &row, uint64_t id, ObObj &value)
+{
+  int ret = OB_ERR_UNEXPECTED;
+  for (int64_t i = 0; i < def.column_ids_.count(); ++i) {
+    if (def.column_ids_.at(i) == id && i < row.count()) {
+      ObDatum *datum = nullptr;
+      if (OB_FAIL(row.at(i)->eval(op.get_eval_ctx(), datum))) {
+      } else { ret = datum->to_obj(value, row.at(i)->obj_meta_); }
+      break;
+    }
+  }
+  return ret;
+}
+int ai_predicate(ObTableModifyOp &op, const ObDMLBaseCtDef &def,
+                 const ObTableSchema &table, const ObExprPtrIArray &row,
+                 ObSqlString &predicate)
+{
+  int ret = OB_SUCCESS;
+  const ObRowkeyInfo &keys = table.get_rowkey_info();
+  for (int64_t i = 0; OB_SUCC(ret) && i < keys.get_size(); ++i) {
+    const ObColumnSchemaV2 *column = table.get_column_schema(keys.get_column(i)->column_id_);
+    ObObj value;
+    char *buffer = nullptr;
+    int64_t capacity = 0, position = 0;
+    if (column == nullptr) { ret = OB_ERR_UNEXPECTED; }
+    else if (OB_FAIL(ai_value(op, def, row, column->get_column_id(), value))) {}
+    else if (i > 0 && OB_FAIL(predicate.append(" AND "))) {}
+    else if (OB_FAIL(ai_identifier(predicate, column->get_column_name_str()))) {}
+    else if (OB_FAIL(predicate.append(" = "))) {}
+    else if (value.is_string_type()) { ret = ai_hex(predicate, value.get_string()); }
+    else if (OB_FAIL(value.print_sql_literal(buffer, capacity, position,
+                    op.get_exec_ctx().get_allocator(), op.get_obj_print_params()))) {}
+    else { ret = predicate.append(buffer, position); }
+  }
+  if (OB_SUCC(ret) && predicate.empty()) { ret = OB_NOT_SUPPORTED; }
+  return ret;
+}
+} // namespace
+
+int AIColumnRuntime::after_row(ObTableModifyOp &op, const ObDMLBaseCtDef &def,
+                               ObDmlEventType event)
+{
+  int ret = OB_SUCCESS;
+  if (!def.has_ai_columns_ || !def.is_primary_index_ || is_worker_write()) { return ret; }
+  const ObTableSchema *table = nullptr;
+  ObSqlCtx *ctx = op.get_exec_ctx().get_sql_ctx();
+  ObSqlString old_key, new_key;
+  const bool deleting = event == ObDmlEventType::DE_DELETING;
+  const bool inserting = event == ObDmlEventType::DE_INSERTING;
+  if (ctx == nullptr || ctx->schema_guard_ == nullptr) { ret = OB_ERR_UNEXPECTED; }
+  else if (OB_FAIL(ctx->schema_guard_->get_table_schema(def.das_base_ctdef_.index_tid_, table))) {}
+  else if (table == nullptr) { ret = OB_ERR_UNEXPECTED; }
+  else if (!inserting && OB_FAIL(ai_predicate(op, def, *table, def.old_row_, old_key))) {}
+  else if (!deleting && OB_FAIL(ai_predicate(op, def, *table, def.new_row_, new_key))) {}
+  else if (OB_FAIL(op.open_inner_conn())) {}
+  else if (OB_FAIL(op.begin_nested_session(true))) {}
+  else {
+    WriteGuard guard;
+    if (!inserting && (deleting || old_key.string() != new_key.string())) {
+      ObSqlString sql;
+      if (OB_FAIL(sql.append_fmt("DELETE FROM oceanbase.__all_ai_column_task WHERE table_id=%lu AND rowkey_hash=SHA2(", table->get_table_id()))) {}
+      else if (OB_FAIL(ai_hex(sql, old_key.string()))) {}
+      else if (OB_FAIL(sql.append(",256)"))) {}
+      else { ret = op.execute_write(sql.ptr()); }
+    }
+    ObString group;
+    for (int64_t i = 0; OB_SUCC(ret) && !deleting && i < table->get_column_count(); ++i) {
+      const ObColumnSchemaV2 *column = table->get_column_schema_by_idx(i);
+      if (!column->is_ai_column()) { continue; }
+      ObSqlString request_name;
+      ObObj token, previous, result;
+      const ObColumnSchemaV2 *request = nullptr;
+      if (OB_FAIL(request_name.append_fmt("__ai_request_%lu", column->get_column_id()))) {}
+      else if ((request = table->get_column_schema(request_name.string())) == nullptr) { ret = OB_ERR_UNEXPECTED; }
+      else if (OB_FAIL(ai_value(op, def, def.new_row_, request->get_column_id(), token))) {}
+      else if (token.is_null()) { ret = OB_ERR_UNEXPECTED; }
+      else if (!inserting && OB_FAIL(ai_value(op, def, def.old_row_, request->get_column_id(), previous))) {}
+      else if (!inserting && !previous.is_null() && previous.get_string() == token.get_string()) { continue; }
+      if (OB_FAIL(ret)) { break; }
+      if (inserting) {
+        if (OB_FAIL(ai_value(op, def, def.new_row_, column->get_column_id(), result))) {}
+        else if (!result.is_null()) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "explicit values for AI result columns");
+        }
+      }
+      if (OB_FAIL(ret)) { break; }
+      if (group.empty()) { group = token.get_string(); }
+      ObSqlString sql;
+      if (OB_FAIL(sql.append_fmt("INSERT INTO oceanbase.__all_ai_column_task(table_id,column_id,rowkey_hash,request_id,request_token,definition_version,rowkey_predicate,state,retry_count,max_retries,eligible_ts) VALUES(%lu,%lu,SHA2(", table->get_table_id(), column->get_column_id()))) {}
+      else if (OB_FAIL(ai_hex(sql, new_key.string()))) {}
+      else if (OB_FAIL(sql.append(",256),"))) {}
+      else if (OB_FAIL(ai_hex(sql, group))) {}
+      else if (OB_FAIL(sql.append(","))) {}
+      else if (OB_FAIL(ai_hex(sql, token.get_string()))) {}
+      else if (OB_FAIL(sql.append_fmt(",%ld,", column->get_schema_version()))) {}
+      else if (OB_FAIL(ai_hex(sql, new_key.string()))) {}
+      else if (OB_FAIL(sql.append_fmt(",0,0,%ld,NOW(6)) ON DUPLICATE KEY UPDATE request_id=VALUES(request_id),request_token=VALUES(request_token),definition_version=VALUES(definition_version),rowkey_predicate=VALUES(rowkey_predicate),state=0,retry_count=0,max_retries=VALUES(max_retries),eligible_ts=NOW(6),result=NULL,error_code=0", column->get_ai_max_retries()))) {}
+      else { ret = op.execute_write(sql.ptr()); }
+    }
+    const int end_ret = op.end_nested_session();
+    if (OB_SUCC(ret)) { ret = end_ret; }
+  }
+  return ret;
+}
+
 int ForeignKeyHandle::do_handle(ObTableModifyOp &op,
                                 const ObDMLBaseCtDef &dml_ctdef,
                                 ObDMLBaseRtDef &dml_rtdef)

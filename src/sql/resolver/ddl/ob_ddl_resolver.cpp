@@ -1954,16 +1954,24 @@ int ObDDLResolver::build_ai_hidden_column(const ObColumnSchemaV2 &result,
     hidden.set_column_id(column_id);
     hidden.set_is_hidden(true);
     hidden.set_nullable(true);
-    hidden.set_data_type(kind == 2 ? ObLongTextType : ObIntType);
+    hidden.set_data_type(kind == 2 ? ObLongTextType : kind == 1 ? ObVarcharType : ObIntType);
     hidden.set_accuracy(ObAccuracy::DDL_DEFAULT_ACCURACY[hidden.get_data_type()]);
     hidden.set_collation_type(kind == 2 ? CS_TYPE_UTF8MB4_BIN : CS_TYPE_BINARY);
     hidden.set_charset_type(kind == 2 ? CHARSET_UTF8MB4 : CHARSET_BINARY);
     ObObj initial;
-    if (kind != 2) {
+    if (kind == 0) {
       initial.set_int(0);
     }
     if (OB_FAIL(hidden.set_column_name(name.string()))) {
     } else if (OB_FAIL(hidden.set_orig_default_value(initial))) {
+    } else if (kind == 1) {
+      hidden.set_data_length(64);
+      hidden.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      hidden.set_charset_type(CHARSET_UTF8MB4);
+      ObObj expression;
+      expression.set_varchar("uuid()");
+      expression.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      ret = hidden.set_cur_default_value(expression, true);
     } else if (OB_FAIL(hidden.set_cur_default_value(initial, false))) {
     }
   }

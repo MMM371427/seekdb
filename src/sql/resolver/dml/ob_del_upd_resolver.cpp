@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "ob_del_upd_resolver.h"
+#include "sql/engine/dml/ob_table_modify_op.h"
 #include "sql/resolver/dml/ob_default_value_utils.h"
 #include "sql/resolver/dml/ob_update_stmt.h"
 #include "sql/resolver/dml/ob_insert_stmt.h"
@@ -68,6 +69,88 @@ ObDelUpdResolver::ObDelUpdResolver(ObResolverParams &params)
 ObDelUpdResolver::~ObDelUpdResolver()
 {
   // TODO Auto-generated destructor stub
+}
+
+int ObDelUpdResolver::resolve_ai_assignments(ObIArray<ObTableAssignment> &tables)
+{
+  int ret = OB_SUCCESS;
+  if (AIColumnRuntime::is_worker_write()) { return ret; }
+  for (int64_t t = 0; OB_SUCC(ret) && t < tables.count(); ++t) {
+    ObTableAssignment &assigns = tables.at(t);
+    const TableItem *table = get_stmt()->get_table_item_by_id(assigns.table_id_);
+    const ObTableSchema *schema = nullptr;
+    if (table == nullptr || !table->is_basic_table()) { continue; }
+    if (OB_FAIL(schema_checker_->get_table_schema(table->ref_id_, schema))) { break; }
+    if (schema == nullptr) { ret = OB_ERR_UNEXPECTED; break; }
+    const int64_t original_count = assigns.assignments_.count();
+    for (int64_t c = 0; OB_SUCC(ret) && c < schema->get_column_count(); ++c) {
+      const ObColumnSchemaV2 *column = schema->get_column_schema_by_idx(c);
+      if (!column->is_ai_column()) { continue; }
+      ObItemType type = T_INVALID;
+      ObSEArray<ObString, 8> dependencies;
+      ObRawExpr *unchanged = nullptr;
+      if (OB_FAIL(ObResolverUtils::resolve_generated_column_info(column->get_ai_column_expr(),
+                         *allocator_, type, dependencies))) { break; }
+      for (int64_t a = 0; OB_SUCC(ret) && a < original_count; ++a) {
+        const ObAssignment &assignment = assigns.assignments_.at(a);
+        const ObColumnSchemaV2 *source = schema->get_column_schema(assignment.column_expr_->get_column_id());
+        if (source == nullptr) { ret = OB_ERR_UNEXPECTED; break; }
+        if (source->is_ai_column()) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "explicit updates of AI result columns");
+          break;
+        }
+        bool affected = source->is_rowkey_column();
+        for (int64_t d = 0; !affected && d < dependencies.count(); ++d) {
+          affected = source->get_column_name_str().case_compare(dependencies.at(d)) == 0;
+        }
+        if (affected) {
+          ObRawExpr *equal = nullptr;
+          if (OB_FAIL(ObRawExprUtils::build_common_binary_op_expr(*params_.expr_factory_,
+                  T_OP_NSEQ, assignment.column_expr_, assignment.expr_, equal))) {}
+          else if (unchanged == nullptr) { unchanged = equal; }
+          else {
+            ObRawExpr *combined = nullptr;
+            if (OB_FAIL(ObRawExprUtils::build_common_binary_op_expr(*params_.expr_factory_,
+                       T_OP_AND, unchanged, equal, combined))) {}
+            else { unchanged = combined; }
+          }
+        }
+      }
+      if (OB_FAIL(ret) || unchanged == nullptr) { continue; }
+      for (int64_t kind = 0; OB_SUCC(ret) && kind < 3; ++kind) {
+        ObSqlString name;
+        ColumnItem *target = nullptr;
+        ObRawExpr *replacement = nullptr;
+        if (kind == 0) { ret = name.append(column->get_column_name_str()); }
+        else { ret = name.append_fmt(kind == 1 ? "__ai_state_%lu" : "__ai_request_%lu", column->get_column_id()); }
+        if (OB_FAIL(ret)) {}
+        else if (OB_FAIL(resolve_basic_column_item(*table, name.string(), true, target))) {}
+        else if (target == nullptr || target->expr_ == nullptr) { ret = OB_ERR_UNEXPECTED; }
+        else if (kind == 0) { ret = ObRawExprUtils::build_null_expr(*params_.expr_factory_, replacement); }
+        else if (kind == 1) {
+          ObConstRawExpr *zero = nullptr;
+          ret = ObRawExprUtils::build_const_int_expr(*params_.expr_factory_, ObIntType, 0, zero);
+          replacement = zero;
+        } else {
+          ObSysFunRawExpr *uuid = nullptr;
+          if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_SYS_UUID, uuid))) {}
+          else { uuid->set_func_name("uuid"); replacement = uuid; }
+        }
+        ObAssignment assignment;
+        if (OB_FAIL(ret)) {}
+        else if (OB_FAIL(ObRawExprUtils::build_case_when_expr(*params_.expr_factory_,
+                       unchanged, target->expr_, replacement, assignment.expr_))) {}
+        else if (OB_FAIL(assignment.expr_->formalize(session_info_))) {}
+        else {
+          assignment.column_expr_ = target->expr_;
+          assignment.is_implicit_ = true;
+          ret = assigns.assignments_.push_back(assignment);
+        }
+      }
+    }
+  }
+  return ret;
 }
 
 int ObDelUpdResolver::resolve_assignments(const ParseNode &parse_node,
@@ -174,6 +257,7 @@ int ObDelUpdResolver::resolve_assignments(const ParseNode &parse_node,
     }
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(resolve_json_partial_update_flag(table_assigns, scope))) {
+    } else if (OB_FAIL(resolve_ai_assignments(table_assigns))) {
     }
   }
   return ret;

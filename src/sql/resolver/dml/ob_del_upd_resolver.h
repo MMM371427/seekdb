@@ -56,6 +56,7 @@ public:
   inline bool is_resolve_insert_update() { return is_resolve_insert_update_;}
 protected:
 
+  int resolve_ai_assignments(common::ObIArray<ObTableAssignment> &tables);
   int resolve_assignments(const ParseNode &parse_node,
                           common::ObIArray<ObTableAssignment> &table_assigns,
                           ObStmtScope scope);
