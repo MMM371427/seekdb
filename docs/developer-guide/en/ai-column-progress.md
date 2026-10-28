@@ -118,3 +118,13 @@ bazel test //unittest/sql:sql_tests --test_filter='AIColumn*.*'
   cases remain pending. RETRY syntax, SHOW AI COLUMNS, ALTER backfill and recovery
   discovery remain incomplete. A conversion failure currently fails the entire
   publication group; per-column conversion validation still needs implementation.
+
+## Confirmed worker regression results
+
+After `e2ad0d6f`, the user reported a successful native build and the worker
+case completing in `/home/magic/seekdb-ai-column-run-QgKj7d`. The log was then
+checked separately: all 12 named boolean results were present and equal to 1.
+This covers grouped visibility/publication, retry state and completion,
+terminal NULL/task cleanup, and latest-request/stale-result guards.
+T1 and vector-index results still need the same strict result verification.
+The result checker now includes the vector suite's 12 boolean assertions.

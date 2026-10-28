@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 CHECKS = {
+    'ai_column_vector_index': 'initial_embeddings_ready vector_hidden_during_regeneration\n        vector_update_task_created old_vector_removed_from_ann regenerated_vector_ready\n        vector_task_removed regenerated_vector_visible_to_ann\n        vector_transaction_sees_invalidation vector_transaction_sees_task\n        vector_rollback_restores_row vector_rollback_removes_task\n        rollback_vector_still_visible_to_ann'.split(),
     'ai_column_worker': '''group_starts_hidden one_request_group_for_two_columns
         no_partial_visibility grouped_results_visible grouped_tasks_removed
         retry_state_committed retry_eventually_completes retry_task_removed
