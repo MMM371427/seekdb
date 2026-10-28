@@ -85,7 +85,14 @@ int ObUpdateResolver::rewrite_ai_retry_status(ParseNode *&node, ParseNode *targe
 int ObUpdateResolver::resolve(const ParseNode &parse_tree)
 {
   int ret = OB_SUCCESS;
-  is_ai_column_retry_ = parse_tree.value_ == 0x41494352;
+  // The statement value_ contains the parser parameter count.
+  const ParseNode *retry_assignments = parse_tree.num_child_ > UPDATE_LIST
+      && parse_tree.children_ != nullptr ? parse_tree.children_[UPDATE_LIST] : nullptr;
+  is_ai_column_retry_ = retry_assignments != nullptr
+      && retry_assignments->type_ == T_ASSIGN_LIST && retry_assignments->num_child_ == 1
+      && retry_assignments->children_ != nullptr && retry_assignments->children_[0] != nullptr
+      && retry_assignments->children_[0]->type_ == T_ASSIGN_ITEM
+      && retry_assignments->children_[0]->value_ == 0x41494352;
   ObUpdateStmt *update_stmt = NULL;
   ObSEArray<ObTableAssignment, 2> tables_assign;
   if (T_UPDATE != parse_tree.type_

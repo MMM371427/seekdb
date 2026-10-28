@@ -73,7 +73,7 @@ for test_case in "${TEST_CASES[@]}"; do
       > "$RUN_DIR/$test_case.log" 2>&1; then
     if ! python3 "$TASK_ROOT/unittest/sql/check_ai_column_results.py" "$test_case" "$RUN_DIR/$test_case.log"; then
       tail -n 100 "$RUN_DIR/$test_case.log"
-      grep -n -B 3 -A 5 -E -- 'AI column .*failed' "$RUN_DIR/log/seekdb.log" | tail -n 80 || true
+      grep -n -E -- 'AI column .*failed' "$RUN_DIR/log/seekdb.log" | tail -n 20 | cut -c 1-1600 || true
       exit 1
     fi
     echo "PASS: $test_case"
@@ -81,8 +81,8 @@ for test_case in "${TEST_CASES[@]}"; do
     echo "FAIL: $test_case"
     tail -n 100 "$RUN_DIR/$test_case.log"
     echo "--- Server error context"
-    grep -n -B 5 -A 8 -E -- 'AI column backfill iteration failed|AI column model evaluation failed|AI column worker iteration failed|errcode=-5[0-9]+' \
-      "$RUN_DIR/log/seekdb.log" | tail -n 100 || true
+    grep -n -E -- 'AI column .*failed' \
+      "$RUN_DIR/log/seekdb.log" | tail -n 20 | cut -c 1-1600 || true
     exit 1
   fi
 done

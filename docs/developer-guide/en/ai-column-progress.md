@@ -163,3 +163,14 @@ syntax, Python compilation and whitespace checks passed.
 Column-wide strict reads, SHOW AI COLUMNS, lifecycle edge cases and per-column
 conversion failures remain outstanding. No merge or competition submission
 has been performed.
+
+
+## RETRY dispatch follow-up
+
+The user successfully built the RETRY implementation, but its first SQL retry
+was rejected as an explicit AI-result update. The statement-level
+`check_question_mark` macro overwrites `ParseNode::value_` with parameter count,
+erasing the retry marker. The marker now lives on the assignment node instead;
+the parser regression checks both a zero statement parameter count and the
+preserved assignment marker. Native runtime verification remains pending.
+Incremental CMake configuration now tracks parser grammar/lexer/enum inputs.

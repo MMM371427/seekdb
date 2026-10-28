@@ -88,8 +88,14 @@ TEST(AIColumnParser, retry_lowers_to_native_update)
     const ParseNode *update = result.result_tree_->children_[0];
     ASSERT_NE(nullptr, update);
     EXPECT_EQ(T_UPDATE, update->type_);
-    EXPECT_EQ(0x41494352, update->value_);
-    EXPECT_EQ(11, update->num_child_);
+    EXPECT_EQ(0, update->value_);
+    ASSERT_EQ(11, update->num_child_);
+    const ParseNode *assignments = update->children_[2];
+    ASSERT_NE(nullptr, assignments);
+    ASSERT_EQ(T_ASSIGN_LIST, assignments->type_);
+    ASSERT_EQ(1, assignments->num_child_);
+    ASSERT_NE(nullptr, assignments->children_[0]);
+    EXPECT_EQ(0x41494352, assignments->children_[0]->value_);
     parser.free_result(result);
   }
 }

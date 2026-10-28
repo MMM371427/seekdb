@@ -14734,10 +14734,12 @@ alter_with_opt_hint TABLE relation_factor alter_table_actions
   malloc_non_terminal_node(column, result->malloc_pool_, T_COLUMN_REF, 3, NULL, NULL, $7);
   malloc_non_terminal_node(assignment, result->malloc_pool_, T_ASSIGN_ITEM, 2, column, column);
   malloc_non_terminal_node(assignments, result->malloc_pool_, T_ASSIGN_LIST, 1, assignment);
+  /* Statement value_ is reserved for parameter count; keep the retry marker
+     on the assignment so check_question_mark cannot overwrite it. */
+  assignment->value_ = 0x41494352;
   /* Lower to native transactional UPDATE; the resolver replaces the assignment. */
   malloc_non_terminal_node($$, result->malloc_pool_, T_UPDATE, 11,
       NULL, tables, assignments, $8, NULL, NULL, NULL, $1, NULL, NULL, NULL);
-  $$->value_ = 0x41494352;
 }
 
 ;
