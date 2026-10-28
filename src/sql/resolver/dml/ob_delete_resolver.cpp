@@ -114,6 +114,9 @@ int ObDeleteResolver::resolve(const ParseNode &parse_tree)
       } else { /*do nothing */ }
     }
   }
+  if (OB_SUCC(ret)) {
+    ret = rewrite_ai_column_reads();
+  }
   return ret;
 }
 

@@ -12708,6 +12708,15 @@ SHOW opt_extended_or_full TABLES opt_from_or_in_database_clause opt_show_conditi
   $$->value_ = $2[0];
   malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, $$, $5, $6, $7);
 }
+| SHOW AI columns_or_fields from_or_in relation_factor opt_from_or_in_database_clause opt_show_condition
+{
+  (void)$3;
+  (void)$4;
+  ParseNode *flags = NULL;
+  malloc_terminal_node(flags, result->malloc_pool_, T_INT);
+  flags->value_ = 4;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, flags, $5, $6, $7);
+}
 | SHOW TABLE STATUS opt_from_or_in_database_clause opt_show_condition
 { malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_TABLE_STATUS, 2, $4, $5); }
 | SHOW PROCEDURE STATUS opt_from_or_in_database_clause opt_show_condition
@@ -14737,6 +14746,26 @@ alter_with_opt_hint TABLE relation_factor alter_table_actions
   /* Statement value_ is reserved for parameter count; keep the retry marker
      on the assignment so check_question_mark cannot overwrite it. */
   assignment->value_ = 0x41494352;
+  /* Lower to native transactional UPDATE; the resolver replaces the assignment. */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_UPDATE, 11,
+      NULL, tables, assignments, $8, NULL, NULL, NULL, $1, NULL, NULL, NULL);
+}
+| alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_name opt_where ',' alter_table_actions
+{
+  (void)$10;
+  ParseNode *table = NULL;
+  ParseNode *tables = NULL;
+  ParseNode *column = NULL;
+  ParseNode *assignment = NULL;
+  ParseNode *assignments = NULL;
+  malloc_non_terminal_node(table, result->malloc_pool_, T_ORG, 4, $3, NULL, NULL, NULL);
+  malloc_non_terminal_node(tables, result->malloc_pool_, T_TABLE_REFERENCES, 1, table);
+  malloc_non_terminal_node(column, result->malloc_pool_, T_COLUMN_REF, 3, NULL, NULL, $7);
+  malloc_non_terminal_node(assignment, result->malloc_pool_, T_ASSIGN_ITEM, 2, column, column);
+  malloc_non_terminal_node(assignments, result->malloc_pool_, T_ASSIGN_LIST, 1, assignment);
+  /* Statement value_ is reserved for parameter count; keep the retry marker
+     on the assignment so check_question_mark cannot overwrite it. */
+  assignment->value_ = 0x41494358;
   /* Lower to native transactional UPDATE; the resolver replaces the assignment. */
   malloc_non_terminal_node($$, result->malloc_pool_, T_UPDATE, 11,
       NULL, tables, assignments, $8, NULL, NULL, NULL, $1, NULL, NULL, NULL);

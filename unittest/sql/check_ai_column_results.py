@@ -4,6 +4,11 @@ import argparse
 from pathlib import Path
 
 CHECKS = {
+    'ai_column_show': 'show_ai_name show_ai_mode show_ai_retries show_ai_where show_ai_like'.split(),
+    'ai_column_retry_strict': '''initial_results_ready strict_read_defaults_off
+        ready_label_is_readable rejected_writes_leave_rows_unchanged
+        failed_task_rows_cleaned full_retry_ready strict_read_succeeds_when_all_ready
+        zero_match_keeps_ready_results zero_match_creates_no_tasks'''.split(),
     'ai_column_manual_retry': ['retry_initial_rows_ready', 'retry_selected_row_invalidated',
         'retry_unselected_row_preserved', 'retry_rollback_restores_results',
         'retry_offline_row_failed', 'retry_status_pseudo_column',

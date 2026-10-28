@@ -174,3 +174,24 @@ erasing the retry marker. The marker now lives on the assignment node instead;
 the parser regression checks both a zero statement parameter count and the
 preserved assignment marker. Native runtime verification remains pending.
 Incremental CMake configuration now tracks parser grammar/lexer/enum inputs.
+
+
+## Confirmed RETRY and strict-read/SHOW implementation checkpoint
+
+The user rebuilt `7599e702` and all eight manual retry assertions passed in
+`/home/magic/seekdb-ai-column-run-loDDNB`. Worker, T1, vector, backfill and
+manual retry now total 59 passing named assertions across reported runs.
+
+Strict-read guards now use a native uncorrelated aggregate over the referenced
+column's STATUS in the same statement and transaction snapshot. A READY row
+cannot bypass unfinished rows elsewhere in its column. NULL-extended outer
+join rows retain NULL state. UPDATE/DELETE predicates also receive guards.
+
+SHOW AI COLUMNS reuses native SHOW table resolution and checks table visibility,
+then exposes Field, Expression, Sync_mode, Max_retries and Definition_version.
+LIKE and WHERE use the normal SHOW condition resolver. Mixed retry/ALTER
+actions are rejected before native UPDATE execution. Added five SHOW assertions
+and nine strict-suite assertions, including the default session mode.
+Bison 2.4.1 generation with -Werror, Python compilation, Bash syntax and diff
+checks passed; native build and these new runtime cases remain pending.
+Lifecycle changes and per-column result conversion handling remain outstanding.

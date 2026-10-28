@@ -88,6 +88,12 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
   // The statement value_ contains the parser parameter count.
   const ParseNode *retry_assignments = parse_tree.num_child_ > UPDATE_LIST
       && parse_tree.children_ != nullptr ? parse_tree.children_[UPDATE_LIST] : nullptr;
+  if (retry_assignments != nullptr && retry_assignments->num_child_ == 1
+      && retry_assignments->children_ != nullptr && retry_assignments->children_[0] != nullptr
+      && retry_assignments->children_[0]->value_ == 0x41494358) {
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "mixing RETRY AI COLUMN with another ALTER action");
+    return OB_NOT_SUPPORTED;
+  }
   is_ai_column_retry_ = retry_assignments != nullptr
       && retry_assignments->type_ == T_ASSIGN_LIST && retry_assignments->num_child_ == 1
       && retry_assignments->children_ != nullptr && retry_assignments->children_[0] != nullptr
@@ -214,6 +220,9 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
     } else if (OB_FAIL(update_stmt->check_dml_source_from_join())) {
     } else if (OB_FAIL(check_safe_update_mode(update_stmt))) {
     } else { /*do nothing*/ }
+  }
+  if (OB_SUCC(ret)) {
+    ret = rewrite_ai_column_reads();
   }
   return ret;
 }

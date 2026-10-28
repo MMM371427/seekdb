@@ -987,6 +987,54 @@ int ObDMLResolver::rewrite_ai_column_reads()
   return ret;
 }
 
+int ObDMLResolver::build_ai_column_wide_state(const TableItem &table,
+    const ObColumnSchemaV2 &column, ObRawExpr *&state)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  auto identifier = [&sql](const ObString &name) -> int {
+    int rc = sql.append("`");
+    for (int64_t i = 0; OB_SUCC(rc) && i < name.length(); ++i) {
+      if (name.ptr()[i] == '`') { rc = sql.append("``"); }
+      else { rc = sql.append(name.ptr() + i, 1); }
+    }
+    if (OB_SUCC(rc)) { rc = sql.append("`"); }
+    return rc;
+  };
+  // Resolve an uncorrelated scalar aggregate in the same native statement and
+  // snapshot. STATUS inspects hidden state without recursively guarding results.
+  if (OB_FAIL(sql.append("SELECT CASE WHEN COUNT(*)=0 THEN 2 ELSE 0 END FROM "))) {
+  } else if (OB_FAIL(identifier(table.database_name_))) {
+  } else if (OB_FAIL(sql.append("."))) {
+  } else if (OB_FAIL(identifier(table.table_name_))) {
+  } else if (OB_FAIL(sql.append(" WHERE AI_COLUMN_STATUS("))) {
+  } else if (OB_FAIL(identifier(column.get_column_name_str()))) {
+  } else if (OB_FAIL(sql.append(") <> 'READY'"))) {
+  } else {
+    ObParser parser(*allocator_, session_info_->get_sql_mode(), session_info_->get_charsets4parser());
+    ParseResult parsed;
+    ObQueryRefRawExpr *query = nullptr;
+    if (OB_FAIL(parser.parse(sql.string(), parsed))) {
+    } else if (parsed.result_tree_ == nullptr || parsed.result_tree_->num_child_ != 1) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_REF_QUERY, query))) {
+    } else {
+      ObSelectResolver resolver(params_);
+      resolver.set_current_level(current_level_ + 1);
+      resolver.set_current_view_level(current_view_level_);
+      resolver.set_parent_namespace_resolver(this);
+      ObSubQueryInfo info;
+      info.sub_query_ = parsed.result_tree_->children_[0];
+      info.ref_expr_ = query;
+      if (OB_FAIL(do_resolve_subquery_info(info, resolver))) {
+      } else if (OB_FAIL(query->formalize(session_info_))) {
+      } else { state = query; }
+    }
+    parser.free_result(parsed);
+  }
+  return ret;
+}
+
 int ObDMLResolver::rewrite_ai_column_read(ObRawExpr *&expr)
 {
   int ret = OB_SUCCESS;
@@ -1010,12 +1058,22 @@ int ObDMLResolver::rewrite_ai_column_read(ObRawExpr *&expr)
       ObSqlString state_name;
       ColumnItem *state = nullptr;
       ObSysFunRawExpr *guard = nullptr;
+      ObRawExpr *wide_state = nullptr;
+      ObRawExpr *present = nullptr;
+      ObRawExpr *missing = nullptr;
+      ObRawExpr *checked_state = nullptr;
       ObConstRawExpr *table_id = nullptr;
       ObConstRawExpr *column_id = nullptr;
       if (OB_FAIL(state_name.append_fmt("__ai_state_%lu", column->get_column_id()))) {
       } else if (OB_FAIL(resolve_basic_column_item(*table, state_name.string(), true, state))) {
       } else if (state == nullptr || state->expr_ == nullptr) {
         ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(build_ai_column_wide_state(*table, *column, wide_state))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_is_not_null_expr(*params_.expr_factory_,
+                     state->expr_, true, present))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_null_expr(*params_.expr_factory_, missing))) {
+      } else if (OB_FAIL(ObRawExprUtils::build_case_when_expr(*params_.expr_factory_,
+                     present, wide_state, missing, checked_state))) {
       } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_SYS_AI_COLUMN_READ, guard))) {
       } else if (OB_FAIL(ObRawExprUtils::build_const_uint_expr(*params_.expr_factory_,
                      ObUInt64Type, table->ref_id_, table_id))) {
@@ -1023,7 +1081,7 @@ int ObDMLResolver::rewrite_ai_column_read(ObRawExpr *&expr)
                      ObUInt64Type, column->get_column_id(), column_id))) {
       } else if (OB_FAIL(guard->init_param_exprs(4))) {
       } else if (OB_FAIL(guard->add_param_expr(expr))) {
-      } else if (OB_FAIL(guard->add_param_expr(state->expr_))) {
+      } else if (OB_FAIL(guard->add_param_expr(checked_state))) {
       } else if (OB_FAIL(guard->add_param_expr(table_id))) {
       } else if (OB_FAIL(guard->add_param_expr(column_id))) {
       } else if (OB_FAIL(guard->formalize(session_info_))) {

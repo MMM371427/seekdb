@@ -58,6 +58,10 @@ TEST(AIColumnParser, alter_add_modify_and_ordinary_ai_identifier)
     "ALTER TABLE docs ADD emb VECTOR(4) AI COLUMN (AI_EMBED('embed_model', content))",
     "ALTER TABLE docs MODIFY tags JSON AI COLUMN (AI_COMPLETE('text_model', content)) WITH (max_retries=0)",
     "CREATE TABLE ordinary(ai INT, sync_mode VARCHAR(10), max_retries INT)",
+    "SHOW AI COLUMNS FROM docs",
+    "SHOW AI COLUMNS FROM db.docs WHERE Field='tags'",
+    "SHOW AI COLUMNS FROM docs FROM db LIKE 'ta%'",
+    "ALTER TABLE docs RETRY AI COLUMN tags WHERE id=1, ADD COLUMN extra_col INT",
     "CREATE TABLE docs(id INT, tags JSON AI COLUMN (AI_COMPLETE('text_model', JSON_OBJECT('text', 'x,y'))))"
   };
   for (const char *sql : statements) {

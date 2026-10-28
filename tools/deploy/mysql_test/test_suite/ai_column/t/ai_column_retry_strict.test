@@ -45,7 +45,7 @@ while ($retry)
     dec $retry; }
 }
 eval select $ready = 1 as initial_results_ready;
-select @@ai_column_strict_read as strict_read_defaults_off;
+select @@ai_column_strict_read=0 as strict_read_defaults_off;
 
 # READY rows can be retried by an arbitrary ordinary SQL predicate.
 --exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19124
