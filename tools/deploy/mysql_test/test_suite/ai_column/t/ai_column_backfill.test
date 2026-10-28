@@ -23,7 +23,7 @@ let $ready = 0;
 while ($retry)
 {
   let $ready = `select count(*)=2 from ai_column_backfill.docs
-    where score=7 and json_unquote(json_extract(tags,'$.input'))=concat('Classify: ',content)`;
+    where score=7 and json_unquote(json_extract(tags,concat(char(36),'.input')))=concat('Classify: ',content)`;
   if ($ready == 1) { let $retry = 0; }
   if ($ready == 0) { --real_sleep 0.1
     dec $retry; }
@@ -39,7 +39,7 @@ let $ready = 0;
 while ($retry)
 {
   let $ready = `select count(*)=3 from ai_column_backfill.docs
-    where score=7 and json_unquote(json_extract(tags,'$.input'))=concat('Classify: ',content)`;
+    where score=7 and json_unquote(json_extract(tags,concat(char(36),'.input')))=concat('Classify: ',content)`;
   if ($ready == 1) { let $retry = 0; }
   if ($ready == 0) { --real_sleep 0.1
     dec $retry; }
